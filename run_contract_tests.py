@@ -8,11 +8,9 @@ EXAMPLES_DIR = Path("xml-test-env/examples")
 SCHEMAS_DIR = Path("xml-test-env/schemas")
 RABBITMQ_HOST = "localhost"
 
-# COMPREHENSIVE MAPPING based on Contract v2.3 + Code Analysis
+# COMPREHENSIVE MAPPING
 DESTINATIONS = {
     # (source, type) -> (queue, exchange, routing_key)
-    
-    # Frontend
     ("frontend", "new_registration"): ("crm.incoming", "", ""),
     ("frontend", "user_created"): ("identity.user.create.request", "", ""),
     ("frontend", "user_registered"): ("crm.incoming", "", ""),
@@ -27,8 +25,6 @@ DESTINATIONS = {
     ("frontend", "wallet_topup_request"): ("crm.incoming", "frontend.exchange", "frontend.to.crm.wallet_topup_request"),
     ("frontend", "cancel_registration"): ("planning.calendar.invite", "calendar.exchange", "frontend.to.planning.cancel_registration"),
     ("frontend", "event_ended"): ("facturatie.incoming", "", ""),
-    
-    # Kassa (Odoo)
     ("kassa", "payment_registered"): ("crm.incoming", "kassa.exchange", "kassa.payments.registration"),
     ("kassa", "consumption_order"): ("crm.incoming", "kassa.exchange", "kassa.payments.consumption"),
     ("kassa", "refund_processed"): ("crm.incoming", "kassa.exchange", "kassa.payments.refund"),
@@ -37,19 +33,13 @@ DESTINATIONS = {
     ("kassa", "wallet_lease_return"): ("crm.incoming", "kassa.exchange", "kassa.to.crm.wallet_lease_return"),
     ("kassa", "payment_status"): ("frontend.incoming", "", ""),
     ("kassa", "invoice_request"): ("facturatie.incoming", "", ""),
-    
-    # IoT Gateway
     ("iot_gateway", "badge_scanned"): ("kassa.incoming", "kassa.exchange", "kassa.incoming"),
-    
-    # Planning
     ("planning", "session_occupancy_update"): ("planning.session.events", "planning.exchange", "planning.session.occupancy"),
     ("planning", "session_updated"): ("planning.session.events", "planning.exchange", "planning.session.updated"),
     ("planning", "session_created"): ("planning.session.events", "planning.exchange", "planning.session.created"),
     ("planning", "session_deleted"): ("planning.session.events", "planning.exchange", "planning.session.deleted"),
     ("planning", "calendar_invite_confirmed"): ("", "calendar.exchange", "planning.to.frontend.calendar.invite.confirmed"),
     ("planning", "system_error"): ("logs", "", ""),
-    
-    # CRM
     ("crm", "new_registration"): ("kassa.incoming", "kassa.exchange", ""),
     ("crm", "invoice_request"): ("facturatie.incoming", "", ""),
     ("crm", "invoice_cancelled"): ("facturatie.incoming", "", ""),
@@ -58,24 +48,14 @@ DESTINATIONS = {
     ("crm", "wallet_balance_update"): ("", "wallet.updates", ""),
     ("crm", "wallet_lease_grant"): ("kassa.incoming", "crm.exchange", "crm.to.kassa.wallet_lease_grant"),
     ("crm", "wallet_remote_topup"): ("kassa.incoming", "crm.exchange", "crm.to.kassa.wallet_remote_topup"),
-    
-    # Facturatie
     ("facturatie", "invoice_status"): ("facturatie.to.crm", "", ""),
     ("facturatie", "invoice_available"): ("facturatie.to.frontend", "", ""),
     ("facturatie", "send_mailing"): ("facturatie.to.mailing", "", ""),
     ("facturatie", "payment_registered"): ("crm.incoming", "", ""),
-    
-    # Identity Service
     ("identity", "user_created"): ("", "user.events", ""),
-    
-    # Monitoring
     ("monitoring", "alert"): ("to_mailing", "", ""),
     ("monitoring", "vat_validation_error"): ("to_mailing", "", ""),
-    
-    # Mailing
-    ("mailing", "mailing_status"): ("facturatie.to.crm", "", ""), # Notification back to CRM/Fact
-    
-    # Generic (logs/heartbeats)
+    ("mailing", "mailing_status"): ("facturatie.to.crm", "", ""),
     ("*", "log"): ("logs", "", ""),
     ("*", "heartbeat"): ("heartbeat", "", ""),
     ("*", "system_error"): ("logs", "", ""),
@@ -101,8 +81,15 @@ def run_tests(dry_run=False):
     if not dry_run:
         try:
             credentials = pika.PlainCredentials("guest", "guest")
-            connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBITMQ_HOST, credentials=credentials))
+            connection = pika.BlockingConnection(pika.ConnectionParameters(
+                host=RABBITMQ_HOST, 
+                port=5672,
+                credentials=credentials,
+                heartbeat=600,
+                blocked_connection_timeout=300
+            ))
             channel = connection.channel()
+            print("Successfully connected to RabbitMQ broker.")
         except Exception as e:
             print(f"Could not connect to RabbitMQ: {e}")
             print("Switching to dry-run mode.\n")
@@ -137,7 +124,6 @@ def run_tests(dry_run=False):
         # Determine destination
         dest = DESTINATIONS.get((source, msg_type))
         if not dest:
-            # Try generic source if specific fails
             dest = DESTINATIONS.get(("*", msg_type))
             
         dest_str = "Unknown destination"
@@ -146,7 +132,6 @@ def run_tests(dry_run=False):
             dest_str = f"Q:{q} EX:{ex} RK:{rk}"
         
         status = "VALID" if valid else "INVALID"
-        print(f"  [{status}] {base_name} -> {dest_str}")
         
         if not dry_run and valid and dest:
             q, ex, rk = dest
@@ -155,11 +140,17 @@ def run_tests(dry_run=False):
                     exchange=ex, 
                     routing_key=rk or q, 
                     body=xml_content,
-                    properties=pika.BasicProperties(content_type="application/xml", delivery_mode=2)
+                    properties=pika.BasicProperties(
+                        content_type="application/xml", 
+                        delivery_mode=2
+                    ),
+                    mandatory=True
                 )
-                print(f"    -> Sent!")
+                print(f"  [{status}] {base_name} -> {dest_str} -> SENT")
             except Exception as e:
-                print(f"    -> Send Error: {e}")
+                print(f"  [{status}] {base_name} -> {dest_str} -> SEND ERROR: {e}")
+        else:
+            print(f"  [{status}] {base_name} -> {dest_str}")
                 
         results.append((base_name, valid, bool(dest)))
 
