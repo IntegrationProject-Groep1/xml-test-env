@@ -1,0 +1,15 @@
+<message>
+  <header>
+    <message_id>d4e5f6a7-b8c9-0123-defa-123456789111</message_id>
+    <timestamp>2026-05-15T10:00:02Z</timestamp>
+    <source>planning</source>
+    <type>session_occupancy_update</type>
+    <version>2.0</version>
+  </header>
+  <body>
+    <session_id>sess-keynote-001</session_id>
+    <current_attendees>98</current_attendees>
+    <max_attendees>100</max_attendees>
+    <status>available</status>
+  </body>
+</message>

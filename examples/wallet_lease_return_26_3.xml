@@ -1,0 +1,15 @@
+<message>
+  <header>
+    <message_id>c3d4e5f6-a7b8-9012-cdef-012345678902</message_id>
+    <timestamp>2026-05-15T23:59:00Z</timestamp>
+    <source>kassa</source>
+    <type>wallet_lease_return</type>
+    <version>2.0</version>
+  </header>
+  <body>
+    <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+    <final_balance currency="eur">12.50</final_balance>
+    <lease_id>LEASE-2026-XYZ</lease_id>
+    <transaction_count>5</transaction_count>
+  </body>
+</message>

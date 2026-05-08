@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<message>
+  <header>
+    <message_id>d4b1c2d3-e4f5-6789-bcde-789012300019</message_id>
+    <timestamp>2026-05-16T08:00:00Z</timestamp>
+    <source>crm</source>
+    <type>invoice_request</type>
+    <version>2.0</version>
+    <!-- correlation_id matcht de message_id van de consumption_order -->
+    <correlation_id>f47ac10b-58cc-4372-a567-0e02b2c3d479</correlation_id>
+  </header>
+  <body>
+    <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+    <invoice_data>
+      <contact>
+        <first_name>Jan</first_name>
+        <last_name>Peeters</last_name>
+      </contact>
+      <email>jan.peeters@ehb.be</email>
+      <address>
+        <street>Laarbeeklaan</street>
+        <number>121</number>
+        <postal_code>1090</postal_code>
+        <city>Jette</city>
+        <country>BE</country>
+      </address>
+      <company_name>Erasmushogeschool Brussel</company_name>
+      <vat_number>BE0876543210</vat_number>
+    </invoice_data>
+    <!-- Geen items — Facturatie haalt die zelf op via correlation_id + consumption_order -->
+  </body>
+</message>

@@ -1,0 +1,24 @@
+<message>
+  <header>
+    <message_id>90d7e8f9-a0b1-2345-defa-345678900015</message_id>
+    <timestamp>2026-05-15T10:05:00Z</timestamp>
+    <source>mailing</source>
+    <type>mailing_status</type>
+    <version>2.0</version>
+    <correlation_id>a1b2c3d4-e5f6-7890-abcd-ef1234567890</correlation_id>
+  </header>
+  <body>
+    <campaign_id>sg-campaign-0089</campaign_id>
+    <subject>Bevestiging inschrijving Shiftfestival 2026</subject>
+    <sent>342</sent>
+    <delivered>339</delivered>
+    <bounced>3</bounced>
+    <bounced_emails>
+      <email>oud.adres@verlopen.be</email>
+      <email>typo@gmial.com</email>
+      <email>verwijderd@bedrijf.be</email>
+    </bounced_emails>
+    <opened>201</opened>
+    <status>completed</status>
+  </body>
+</message>

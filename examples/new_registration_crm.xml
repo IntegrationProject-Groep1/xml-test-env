@@ -1,0 +1,31 @@
+<message>
+  <header>
+    <message_id>a1e8f9a0-b1c2-3456-efab-456789000016</message_id>
+    <timestamp>2026-04-24T09:16:00Z</timestamp>
+    <source>crm</source>
+    <type>new_registration</type>
+    <version>2.0</version>
+    <correlation_id>c3d4e5f6-a7b8-9012-cdef-012345678902</correlation_id>
+  </header>
+  <body>
+    <customer>
+      <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+      <email>jan.peeters@ehb.be</email>
+      <date_of_birth>1995-03-21</date_of_birth>
+      <contact>
+        <first_name>Jan</first_name>
+        <last_name>Peeters</last_name>
+      </contact>
+      <type>company</type>
+      <company_name>Erasmushogeschool Brussel</company_name>
+      <vat_number>BE0876543210</vat_number>
+      <company_id>ehb-001</company_id>
+      <session_id>sess-keynote-001</session_id>
+      <session_title>Keynote: AI in Healthcare</session_title>
+      <payment_due>
+        <amount currency="eur">25.00</amount>
+        <status>unpaid</status>
+      </payment_due>
+    </customer>
+  </body>
+</message>

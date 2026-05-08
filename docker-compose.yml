@@ -4,11 +4,128 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
-    environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 5
+
+  crm-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.receiver
+    environment:
+      - QUEUE_NAME=crm.incoming
+      - SERVICE_NAME=CRM
+      - PYTHONUNBUFFERED=1
+    tty: true
+    volumes:
+      - ./schemas:/app/schemas
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  kassa-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.receiver
+    environment:
+      - QUEUE_NAME=kassa.incoming
+      - SERVICE_NAME=Kassa
+      - PYTHONUNBUFFERED=1
+    tty: true
+    volumes:
+      - ./schemas:/app/schemas
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  facturatie-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.receiver
+    environment:
+      - QUEUE_NAME=facturatie.incoming
+      - SERVICE_NAME=Facturatie
+      - PYTHONUNBUFFERED=1
+    tty: true
+    volumes:
+      - ./schemas:/app/schemas
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  planning-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.receiver
+    environment:
+      - QUEUE_NAME=planning.registration
+      - SERVICE_NAME=Planning
+      - PYTHONUNBUFFERED=1
+    tty: true
+    volumes:
+      - ./schemas:/app/schemas
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  mailing-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.receiver
+    environment:
+      - QUEUE_NAME=crm.to.mailing
+      - SERVICE_NAME=Mailing
+      - PYTHONUNBUFFERED=1
+    tty: true
+    volumes:
+      - ./schemas:/app/schemas
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  frontend-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.receiver
+    environment:
+      - QUEUE_NAME=frontend.incoming
+      - SERVICE_NAME=Frontend
+      - PYTHONUNBUFFERED=1
+    tty: true
+    volumes:
+      - ./schemas:/app/schemas
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  identity-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.receiver
+    environment:
+      - QUEUE_NAME=identity.user.create.request
+      - SERVICE_NAME=Identity
+      - PYTHONUNBUFFERED=1
+    tty: true
+    volumes:
+      - ./schemas:/app/schemas
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  monitoring-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.receiver
+    environment:
+      - QUEUE_NAME=logs
+      - SERVICE_NAME=Monitoring
+      - PYTHONUNBUFFERED=1
+    tty: true
+    volumes:
+      - ./schemas:/app/schemas
+    depends_on:
+      rabbitmq:
+        condition: service_healthy

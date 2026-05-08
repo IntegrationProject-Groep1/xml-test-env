@@ -1,0 +1,20 @@
+<message>
+  <header>
+    <message_id>f4a1b2c3-d4e5-6789-abcd-789012300019</message_id>
+    <timestamp>2026-04-24T11:01:00Z</timestamp>
+    <source>crm</source>
+    <type>profile_update</type>
+    <version>2.0</version>
+  </header>
+  <body>
+    <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+    <email>jan.peeters@ehb.be</email>
+    <contact>
+      <first_name>Jan</first_name>
+      <last_name>Peeters</last_name>
+    </contact>
+    <type>company</type>
+    <company_name>Erasmushogeschool Brussel</company_name>
+    <vat_number>BE0123456789</vat_number>
+  </body>
+</message>

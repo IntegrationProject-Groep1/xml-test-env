@@ -1,0 +1,14 @@
+<message>
+  <header>
+    <message_id>c23d4e5f-6a7b-8901-cdef-234567890999</message_id>
+    <timestamp>2026-05-15T10:00:00Z</timestamp>
+    <source>crm</source>
+    <type>session_registration_confirmed</type>
+    <version>2.0</version>
+    <correlation_id>f47ac10b-58cc-4372-a567-0e02b2c3d479</correlation_id>
+  </header>
+  <body>
+    <session_id>sess-keynote-001</session_id>
+    <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+  </body>
+</message>

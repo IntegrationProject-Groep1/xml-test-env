@@ -1,0 +1,14 @@
+<message>
+  <header>
+    <message_id>07a8b9c0-d1e2-3456-abcd-456789000006</message_id>
+    <timestamp>2026-05-15T18:05:00Z</timestamp>
+    <source>kassa</source>
+    <type>badge_assigned</type>
+    <version>2.0</version>
+  </header>
+  <body>
+    <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+    <badge_id>BADGE-0042</badge_id>
+    <assigned_at>2026-05-15T18:05:00Z</assigned_at>
+  </body>
+</message>

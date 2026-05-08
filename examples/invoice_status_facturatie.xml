@@ -1,0 +1,16 @@
+<message>
+  <header>
+    <message_id>7eb5c6d7-e8f9-0123-bcde-123456700013</message_id>
+    <timestamp>2026-05-16T09:00:00Z</timestamp>
+    <source>facturatie</source>
+    <type>invoice_status</type>
+    <version>2.0</version>
+  </header>
+  <body>
+    <invoice_id>foss-inv-00142</invoice_id>
+    <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+    <status>paid</status>
+    <amount currency="eur">150.00</amount>
+    <due_date>2026-06-15</due_date>
+  </body>
+</message>

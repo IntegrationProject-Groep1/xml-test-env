@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:simpleType name="UUIDType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:element name="message">
+    <xs:complexType><xs:sequence>
+      <xs:element name="header">
+        <xs:complexType><xs:sequence>
+          <xs:element name="message_id" type="xs:string"/>
+          <xs:element name="timestamp"  type="xs:dateTime"/>
+          <xs:element name="source"     fixed="frontend" type="xs:string"/>
+          <xs:element name="type"       fixed="session_create_request" type="xs:string"/>
+          <xs:element name="version"    fixed="2.0" type="xs:string"/>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+      <xs:element name="body">
+        <xs:complexType><xs:sequence>
+          <xs:element name="session_id"     type="xs:string"/>
+          <xs:element name="title"          type="xs:string"/>
+          <xs:element name="start_datetime" type="xs:dateTime"/>
+          <xs:element name="end_datetime"   type="xs:dateTime"/>
+          <xs:element name="location"       type="xs:string" minOccurs="0"/>
+          <xs:element name="session_type"   type="xs:string" minOccurs="0"/>
+          <xs:element name="status"         type="xs:string" minOccurs="0"/>
+          <xs:element name="max_attendees"  type="xs:integer" minOccurs="0"/>
+        </xs:sequence></xs:complexType>
+      </xs:element>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>

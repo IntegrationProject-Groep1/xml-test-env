@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<message>
+  <header>
+    <message_id>c3d4e5f6-a7b8-9012-cdef-012345678902</message_id>
+    <timestamp>2026-04-24T09:17:00Z</timestamp>
+    <source>frontend</source>
+    <type>calendar_invite</type>
+    <version>2.0</version>
+    <correlation_id>cal-req-4821</correlation_id>
+  </header>
+  <body>
+    <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
+    <session_id>sess-keynote-001</session_id>
+    <title>Keynote: AI in Healthcare</title>
+    <start_datetime>2026-05-15T14:00:00Z</start_datetime>
+    <end_datetime>2026-05-15T15:00:00Z</end_datetime>
+    <location>Aula A - Campus Jette</location>
+    <attendee_email>jan.peeters@ehb.be</attendee_email>
+  </body>
+</message>
