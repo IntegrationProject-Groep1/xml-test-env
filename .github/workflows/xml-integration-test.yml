@@ -44,24 +44,29 @@ jobs:
     - name: Build and Start Mock Services
       run: |
         cd xml-test-env
-        docker compose up --build -d
+        # Start alleen de mocks, NIET de compose rabbitmq (om poort-conflicten te vermijden)
+        docker compose up --build -d crm-mock kassa-mock facturatie-mock planning-mock identity-mock mailing-mock frontend-mock monitoring-mock
       env:
-        RABBITMQ_HOST: localhost
+        # Dit vertelt de containers in compose om naar de GitHub Service rabbitmq te kijken
+        RABBITMQ_HOST: rabbitmq 
 
     - name: Wait for Mocks to be ready
       run: sleep 15
 
     - name: Extract XSDs and Examples
       run: |
-        # Set paths relative to runner root
         export CONTRACT_PATH="../xml-xsd-contract/XML_XSD_Contract_v2.3_Centralized 1.md"
         python xml-test-env/extract_xsds.py
 
     - name: Setup RabbitMQ Infrastructure
       run: python xml-test-env/setup_queues.py
+      env:
+        RABBITMQ_HOST: localhost
 
     - name: Run XML Contract Integration Tests
       run: python xml-test-env/run_contract_tests.py --live
+      env:
+        RABBITMQ_HOST: localhost
 
     - name: Dump Mock Service Logs (Always)
       if: always()
