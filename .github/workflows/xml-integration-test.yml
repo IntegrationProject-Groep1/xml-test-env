@@ -73,9 +73,15 @@ jobs:
     - name: Run XML Contract Integration Tests
       run: |
         cd $GITHUB_WORKSPACE/xml-test-env
-        python run_contract_tests.py --live
+        python run_contract_tests.py --live | tee test-output.txt
       env:
         RABBITMQ_HOST: localhost
+
+    - name: Generate and Post Summary
+      if: always()
+      run: |
+        cd $GITHUB_WORKSPACE/xml-test-env
+        python generate_summary.py
 
     - name: Dump Mock Service Logs (Always)
       if: always()
