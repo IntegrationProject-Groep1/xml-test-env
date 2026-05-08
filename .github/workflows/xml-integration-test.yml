@@ -44,16 +44,17 @@ jobs:
     - name: Build and Start Mock Services
       run: |
         cd xml-test-env
-        docker-compose up --build -d
+        docker compose up --build -d
       env:
         RABBITMQ_HOST: localhost
 
     - name: Wait for Mocks to be ready
-      run: sleep 10
+      run: sleep 15
 
     - name: Extract XSDs and Examples
       run: |
-        # Ensure the script uses the correct relative paths
+        # Set paths relative to runner root
+        export CONTRACT_PATH="../xml-xsd-contract/XML_XSD_Contract_v2.3_Centralized 1.md"
         python xml-test-env/extract_xsds.py
 
     - name: Setup RabbitMQ Infrastructure
@@ -67,14 +68,14 @@ jobs:
       run: |
         cd xml-test-env
         echo "=== CRM MOCK LOGS ==="
-        docker-compose logs crm-mock
+        docker compose logs crm-mock
         echo "=== KASSA MOCK LOGS ==="
-        docker-compose logs kassa-mock
+        docker compose logs kassa-mock
         echo "=== FACTURATIE MOCK LOGS ==="
-        docker-compose logs facturatie-mock
+        docker compose logs facturatie-mock
         echo "=== PLANNING MOCK LOGS ==="
-        docker-compose logs planning-mock
+        docker compose logs planning-mock
         echo "=== IDENTITY MOCK LOGS ==="
-        docker-compose logs identity-mock
+        docker compose logs identity-mock
         echo "=== MAILING MOCK LOGS ==="
-        docker-compose logs mailing-mock
+        docker compose logs mailing-mock

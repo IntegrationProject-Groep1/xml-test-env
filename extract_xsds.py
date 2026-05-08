@@ -1,7 +1,9 @@
 import re
+import os
 from pathlib import Path
 
-contract_path = Path("xml-xsd-contract/XML_XSD_Contract_v2.3_Centralized 1.md")
+contract_path_str = os.getenv("CONTRACT_PATH", "xml-xsd-contract/XML_XSD_Contract_v2.3_Centralized 1.md")
+contract_path = Path(contract_path_str)
 xsd_dir = Path("xml-test-env/schemas")
 xml_dir = Path("xml-test-env/examples")
 xsd_dir.mkdir(parents=True, exist_ok=True)
