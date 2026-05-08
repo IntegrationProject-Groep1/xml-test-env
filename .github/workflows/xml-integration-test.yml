@@ -11,14 +11,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    services:
-      rabbitmq:
-        image: rabbitmq:3-management
-        ports:
-          - 5672:5672
-          - 15672:15672
-        options: --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 10s --health-timeout 5s --health-retries 5
-
     steps:
     - name: Checkout xml-test-env
       uses: actions/checkout@v3
@@ -41,17 +33,30 @@ jobs:
         python -m pip install --upgrade pip
         pip install lxml pika
 
-    - name: Build and Start Mock Services
+    - name: Build and Start Services
       run: |
         cd xml-test-env
-        # Start alleen de mocks, NIET de compose rabbitmq (om poort-conflicten te vermijden)
-        docker compose up --build -d crm-mock kassa-mock facturatie-mock planning-mock identity-mock mailing-mock frontend-mock monitoring-mock
+        # We laten docker-compose alles afhandelen (inclusief rabbitmq)
+        docker compose up --build -d
       env:
-        # Dit vertelt de containers in compose om naar de GitHub Service rabbitmq te kijken
-        RABBITMQ_HOST: rabbitmq 
+        RABBITMQ_HOST: rabbitmq
 
-    - name: Wait for Mocks to be ready
-      run: sleep 15
+    - name: Wait for RabbitMQ Health
+      run: |
+        echo "Waiting for RabbitMQ to be healthy..."
+        # Wacht tot de rabbitmq container 'healthy' rapporteert
+        MAX_RETRIES=20
+        COUNT=0
+        until [ "$(docker inspect --format='{{.State.Health.Status}}' xml-test-env-rabbitmq-1)" == "healthy" ]; do
+            if [ $COUNT -ge $MAX_RETRIES ]; then
+                echo "Timeout waiting for RabbitMQ"
+                exit 1
+            fi
+            echo "Waiting... ($COUNT)"
+            sleep 5
+            COUNT=$((COUNT+1))
+        done
+        echo "RabbitMQ is healthy!"
 
     - name: Extract XSDs and Examples
       run: |
@@ -72,15 +77,5 @@ jobs:
       if: always()
       run: |
         cd xml-test-env
-        echo "=== CRM MOCK LOGS ==="
-        docker compose logs crm-mock
-        echo "=== KASSA MOCK LOGS ==="
-        docker compose logs kassa-mock
-        echo "=== FACTURATIE MOCK LOGS ==="
-        docker compose logs facturatie-mock
-        echo "=== PLANNING MOCK LOGS ==="
-        docker compose logs planning-mock
-        echo "=== IDENTITY MOCK LOGS ==="
-        docker compose logs identity-mock
-        echo "=== MAILING MOCK LOGS ==="
-        docker compose logs mailing-mock
+        echo "=== ALL SERVICE LOGS ==="
+        docker compose logs
