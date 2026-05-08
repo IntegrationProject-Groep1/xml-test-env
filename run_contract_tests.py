@@ -4,8 +4,9 @@ import sys
 from pathlib import Path
 from lxml import etree
 
-EXAMPLES_DIR = Path("xml-test-env/examples")
-SCHEMAS_DIR = Path("xml-test-env/schemas")
+SCRIPT_DIR = Path(__file__).parent
+EXAMPLES_DIR = SCRIPT_DIR / "examples"
+SCHEMAS_DIR = SCRIPT_DIR / "schemas"
 RABBITMQ_HOST = "localhost"
 
 # COMPREHENSIVE MAPPING
