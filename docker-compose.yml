@@ -55,13 +55,13 @@ services:
       rabbitmq:
         condition: service_healthy
 
-  planning-session-mock:
+  planning-mock:
     build:
       context: .
       dockerfile: Dockerfile.receiver
     environment:
       - QUEUE_NAME=planning.session.events
-      - SERVICE_NAME=Planning (Sessions)
+      - SERVICE_NAME=Planning
       - PYTHONUNBUFFERED=1
     tty: true
     volumes:
@@ -70,43 +70,13 @@ services:
       rabbitmq:
         condition: service_healthy
 
-  planning-calendar-mock:
+  mailing-mock:
     build:
       context: .
       dockerfile: Dockerfile.receiver
     environment:
-      - QUEUE_NAME=planning.calendar.invite
-      - SERVICE_NAME=Planning (Calendar)
-      - PYTHONUNBUFFERED=1
-    tty: true
-    volumes:
-      - ./schemas:/app/schemas
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-
-  mailing-crm-mock:
-    build:
-      context: .
-      dockerfile: Dockerfile.receiver
-    environment:
-      - QUEUE_NAME=crm.to.mailing
-      - SERVICE_NAME=Mailing (from CRM)
-      - PYTHONUNBUFFERED=1
-    tty: true
-    volumes:
-      - ./schemas:/app/schemas
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-
-  mailing-facturatie-mock:
-    build:
-      context: .
-      dockerfile: Dockerfile.receiver
-    environment:
-      - QUEUE_NAME=facturatie.to.mailing
-      - SERVICE_NAME=Mailing (from Facturatie)
+      - QUEUE_NAME=mailing.incoming
+      - SERVICE_NAME=Mailing
       - PYTHONUNBUFFERED=1
     tty: true
     volumes:
