@@ -69,23 +69,26 @@ def main():
         # --- Bindings ---
         
         # Kassa bindings
-        channel.queue_bind(queue="crm.incoming", exchange="kassa.exchange", routing_key="kassa.payments.*")
-        channel.queue_bind(queue="frontend.payments", exchange="kassa.exchange", routing_key="kassa.frontend.*")
+        channel.queue_bind(queue="crm.incoming", exchange="kassa.exchange", routing_key="kassa.#")
+        channel.queue_bind(queue="kassa.incoming", exchange="kassa.exchange", routing_key="kassa.incoming")
+        channel.queue_bind(queue="frontend.incoming", exchange="kassa.exchange", routing_key="kassa.frontend.#")
         
         # Planning bindings
-        channel.queue_bind(queue="planning.session.events", exchange="planning.exchange", routing_key="planning.session.*")
-        channel.queue_bind(queue="planning.session.events", exchange="planning.exchange", routing_key="planning.to.frontend.session.*")
-        channel.queue_bind(queue="planning.calendar.invite", exchange="calendar.exchange", routing_key="calendar.invite")
-        channel.queue_bind(queue="planning.calendar.invite", exchange="calendar.exchange", routing_key="*.to.planning.*")
+        # Mock Planning listens on planning.session.events
+        channel.queue_bind(queue="planning.session.events", exchange="planning.exchange", routing_key="#")
+        channel.queue_bind(queue="planning.session.events", exchange="calendar.exchange", routing_key="#")
+        
+        # CRM bindings
+        channel.queue_bind(queue="crm.incoming", exchange="frontend.exchange", routing_key="frontend.to.crm.#")
+        channel.queue_bind(queue="crm.incoming", exchange="kassa.exchange", routing_key="kassa.to.crm.#")
+        channel.queue_bind(queue="kassa.incoming", exchange="crm.exchange", routing_key="crm.to.kassa.#")
         
         # Identity bindings (fanout)
-        channel.queue_bind(queue="frontend.user_created", exchange="user.events", routing_key="")
+        channel.queue_bind(queue="frontend.incoming", exchange="user.events", routing_key="")
         channel.queue_bind(queue="crm.incoming", exchange="user.events", routing_key="")
         
         # CRM Fanout (unregistered)
-        channel.queue_bind(queue="crm.salesforce", exchange="frontend.user.unregistered", routing_key="")
-        channel.queue_bind(queue="planning.outlook", exchange="frontend.user.unregistered", routing_key="")
-        channel.queue_bind(queue="mailing.sendgrid", exchange="frontend.user.unregistered", routing_key="")
+        channel.queue_bind(queue="crm.incoming", exchange="frontend.user.unregistered", routing_key="")
 
         # Wallet updates (fanout)
         channel.queue_bind(queue="frontend.incoming", exchange="wallet.updates", routing_key="")
