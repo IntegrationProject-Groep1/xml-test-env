@@ -35,8 +35,7 @@ jobs:
 
     - name: Build and Start Services
       run: |
-        cd xml-test-env
-        # We laten docker-compose alles afhandelen (inclusief rabbitmq)
+        cd $GITHUB_WORKSPACE/xml-test-env
         docker compose up --build -d
       env:
         RABBITMQ_HOST: rabbitmq
@@ -44,12 +43,12 @@ jobs:
     - name: Wait for RabbitMQ Health
       run: |
         echo "Waiting for RabbitMQ to be healthy..."
-        # Wacht tot de rabbitmq container 'healthy' rapporteert
         MAX_RETRIES=20
         COUNT=0
         until [ "$(docker inspect --format='{{.State.Health.Status}}' xml-test-env-rabbitmq-1)" == "healthy" ]; do
             if [ $COUNT -ge $MAX_RETRIES ]; then
                 echo "Timeout waiting for RabbitMQ"
+                docker compose -f $GITHUB_WORKSPACE/xml-test-env/docker-compose.yml logs
                 exit 1
             fi
             echo "Waiting... ($COUNT)"
@@ -60,22 +59,27 @@ jobs:
 
     - name: Extract XSDs and Examples
       run: |
-        export CONTRACT_PATH="../xml-xsd-contract/XML_XSD_Contract_v2.3_Centralized 1.md"
-        python xml-test-env/extract_xsds.py
+        # Gebruik paden relatief aan de runner root
+        export CONTRACT_PATH="$GITHUB_WORKSPACE/xml-xsd-contract/XML_XSD_Contract_v2.3_Centralized 1.md"
+        python $GITHUB_WORKSPACE/xml-test-env/extract_xsds.py
 
     - name: Setup RabbitMQ Infrastructure
-      run: python xml-test-env/setup_queues.py
+      run: |
+        cd $GITHUB_WORKSPACE/xml-test-env
+        python setup_queues.py
       env:
         RABBITMQ_HOST: localhost
 
     - name: Run XML Contract Integration Tests
-      run: python xml-test-env/run_contract_tests.py --live
+      run: |
+        cd $GITHUB_WORKSPACE/xml-test-env
+        python run_contract_tests.py --live
       env:
         RABBITMQ_HOST: localhost
 
     - name: Dump Mock Service Logs (Always)
       if: always()
       run: |
-        cd xml-test-env
+        cd $GITHUB_WORKSPACE/xml-test-env
         echo "=== ALL SERVICE LOGS ==="
         docker compose logs
