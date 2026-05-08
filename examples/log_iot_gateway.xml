@@ -1,0 +1,14 @@
+<message>
+  <header>
+    <message_id>b2c3d4e5-f6a7-8901-bcde-f12345678908</message_id>
+    <timestamp>2026-04-24T10:30:00Z</timestamp>
+    <source>iot_gateway</source>
+    <type>log</type>
+    <version>2.0</version>
+  </header>
+  <body>
+    <level>error</level>
+    <action>badge</action>
+    <message>Badge scan payload rejected</message>
+  </body>
+</message>

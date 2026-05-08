@@ -25,18 +25,26 @@ sections = content.split("---")
 
 count = 0
 for section_text in sections:
-    # Match header: ### 9.1 `mailing_status`
-    header_match = re.search(r"### (\d+(?:\.\d+)?) `([^`]+)`", section_text)
-    if not header_match:
+    # Match message headers:
+    # - ### 9.1 `mailing_status`
+    # - ## 3.5 Log — Alle teams ...
+    header_match = re.search(r"#{2,3} (\d+(?:\.\d+)?) `([^`]+)`", section_text)
+    if header_match:
+        section_id = header_match.group(1).strip()
+        msg_type = header_match.group(2).strip()
+    else:
+        log_header_match = re.search(r"#{2,3} (\d+(?:\.\d+)?) Log\b", section_text)
+        if not log_header_match:
+            continue
+        section_id = log_header_match.group(1).strip()
+        msg_type = "log"
+    if not section_id or not msg_type:
         continue
-        
-    section_id = header_match.group(1).strip()
-    msg_type = header_match.group(2).strip()
     
     # Extract XSD
-    xsd_match = re.search(r"#### XSD.*?```xml\s+(.*?)\s+```", section_text, re.DOTALL)
+    xsd_match = re.search(r"#{3,4} XSD.*?```xml\s+(.*?)\s+```", section_text, re.DOTALL)
     # Extract Example XML
-    xml_match = re.search(r"#### Voorbeeld XML.*?```xml\s+(.*?)\s+```", section_text, re.DOTALL)
+    xml_match = re.search(r"#{3,4} Voorbeeld XML.*?```xml\s+(.*?)\s+```", section_text, re.DOTALL)
     
     if xsd_match and xml_match:
         xsd_content = xsd_match.group(1).strip()
