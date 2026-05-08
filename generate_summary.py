@@ -80,9 +80,22 @@ def generate_summary():
             send_status = "✔️" if "SENT" in details else "❌"
             
             # Check of het type (onderdeel van de naam) ontvangen is
-            # De naam is vaak type_source of type_section, we proberen het type te extraheren
-            msg_type_guess = name.split('_')[0]
+            # De naam bevat vaak het type gevolgd door source of sectie_id
+            # Bijv: payment_registered_kassa -> type is payment_registered
+            msg_type_guess = name.rsplit('_', 1)[0]
             receivers = received_map.get(msg_type_guess, [])
+            
+            # Fallback: check of de naam zelf als type is gelogd
+            if not receivers:
+                receivers = received_map.get(name, [])
+            
+            # Fallback 2: check of een deel van de naam overeenkomt (bijv voor complexe namen)
+            if not receivers:
+                for logged_type, svcs in received_map.items():
+                    if logged_type in name:
+                        receivers = svcs
+                        break
+
             received_by = ", ".join([f"`{s}`" for s in receivers]) if receivers else "⏳ _Niet ontvangen_"
             
             f.write(f"| {status_icon} | `{name}` | `{destination}` | {send_status} | {received_by} |\n")
