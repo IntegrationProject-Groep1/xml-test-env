@@ -77,6 +77,11 @@ jobs:
       env:
         RABBITMQ_HOST: localhost
 
+    - name: Wait for Message Delivery
+      run: |
+        echo "Waiting 10 seconds for mock services to process messages..."
+        sleep 10
+
     - name: Generate and Post Summary
       if: always()
       run: |

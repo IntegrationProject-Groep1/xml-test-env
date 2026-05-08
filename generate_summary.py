@@ -1,6 +1,22 @@
 import os
 import re
 from pathlib import Path
+import subprocess
+
+def get_receiver_logs():
+    """Haal logs op van de docker containers en filter op ontvangen berichten."""
+    try:
+        # Haal logs op van alle mock services
+        result = subprocess.run(
+            ["docker", "compose", "logs", "--no-log-prefix"], 
+            capture_output=True, 
+            text=True, 
+            cwd=Path(__file__).parent
+        )
+        return result.stdout
+    except Exception as e:
+        print(f"Fout bij ophalen logs: {e}")
+        return ""
 
 def generate_summary():
     summary_file = os.getenv("GITHUB_STEP_SUMMARY")
@@ -8,7 +24,7 @@ def generate_summary():
         print("Not running in GitHub Actions, skipping summary.")
         return
 
-    output_path = Path("test-output.txt")
+    output_path = Path(__file__).parent / "test-output.txt"
     if not output_path.exists():
         with open(summary_file, "a") as f:
             f.write("## ⚠️ Geen test resultaten gevonden\n")
@@ -17,14 +33,25 @@ def generate_summary():
 
     content = output_path.read_text()
     
-    # Parse results using regex
-    # Example line: [VALID] new_registration -> Q:crm.incoming EX: RK: -> SENT
+    # Parse verzonden resultaten
     results = re.findall(r"\[(VALID|INVALID)\] (.*?) -> (.*)", content)
     
     total = len(results)
     valid_count = sum(1 for r in results if r[0] == "VALID")
     invalid_count = total - valid_count
     
+    # Haal logs op voor ontvangst verificatie
+    logs = get_receiver_logs()
+    # Zoek naar patronen zoals: [CRM] >>> ONTVANGEN: new_registration
+    received_matches = re.findall(r"\[(.*?)\] >>> ONTVANGEN: (.*?)$", logs, re.MULTILINE)
+    
+    # Maak een map van ontvangen berichten per type
+    received_map = {}
+    for service, msg_type in received_matches:
+        if msg_type not in received_map:
+            received_map[msg_type] = []
+        received_map[msg_type].append(service)
+
     with open(summary_file, "a") as f:
         f.write("# 📂 XML Integratie & Contract Test Rapport\n\n")
         
@@ -40,9 +67,9 @@ def generate_summary():
         
         f.write(f"✅ **Valid**: {valid_count} | ❌ **Invalid**: {invalid_count}\n\n")
         
-        f.write("### 📝 Contract Details\n")
-        f.write("| Status | Contract Naam | Bestemming | Details |\n")
-        f.write("|---|---|---|---|\n")
+        f.write("### 📝 Contract & Delivery Details\n")
+        f.write("| Status | Contract Naam | Bestemming | Verzonden | Ontvangen door |\n")
+        f.write("|---|---|---|---|---|\n")
         
         for status, name, details in results:
             status_icon = "✅" if status == "VALID" else "❌"
@@ -50,14 +77,19 @@ def generate_summary():
             # Split details to separate destination and send status
             dest_parts = details.split(" -> ")
             destination = dest_parts[0] if len(dest_parts) > 0 else "Onbekend"
-            send_status = dest_parts[1] if len(dest_parts) > 1 else ""
+            send_status = "✔️" if "SENT" in details else "❌"
             
-            f.write(f"| {status_icon} | `{name}` | `{destination}` | {send_status} |\n")
+            # Check of het type (onderdeel van de naam) ontvangen is
+            # De naam is vaak type_source of type_section, we proberen het type te extraheren
+            msg_type_guess = name.split('_')[0]
+            receivers = received_map.get(msg_type_guess, [])
+            received_by = ", ".join([f"`{s}`" for s in receivers]) if receivers else "⏳ _Niet ontvangen_"
+            
+            f.write(f"| {status_icon} | `{name}` | `{destination}` | {send_status} | {received_by} |\n")
         
         f.write("\n### 📨 Bericht Logboek (Live Simulatie)\n")
-        f.write("> Zie de 'Run XML Contract Integration Tests' stap voor de volledige technische details.\n")
+        f.write("> De 'Ontvangen door' kolom bevestigt dat de mock-service het bericht daadwerkelijk uit de queue heeft gehaald.\n")
         
-        # Check for summary line at the end
         summary_line = re.search(r"Summary: (.*)", content)
         if summary_line:
             f.write(f"\n**Samenvatting:** {summary_line.group(1)}\n")
