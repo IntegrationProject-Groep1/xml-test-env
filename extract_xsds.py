@@ -45,8 +45,10 @@ for section_text in sections:
         # Clean up msg_type (remove optional context in parens)
         msg_type_clean = msg_type.split()[0].replace("`", "")
         
-        # Determine source from XSD if possible
-        source_match = re.search(r'<xs:element name="source">.*?<xs:enumeration value="([^"]+)"/>', xsd_content, re.DOTALL)
+        # Determine source from the example XML first. Some shared schemas
+        # allow multiple source values, so the first XSD enumeration is not
+        # necessarily the source used by this contract example.
+        source_match = re.search(r"<source>([^<]+)</source>", xml_content)
         if source_match:
             source = source_match.group(1)
             base_name = f"{msg_type_clean}_{source}"
