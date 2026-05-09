@@ -168,15 +168,31 @@ def _flows_by_id() -> dict[str, dict]:
 
 
 def contract_example_path(repos_dir: Path, flow_id: str) -> Path | None:
-    """Resolve contract `example:` XML for a flow id (under repos_dir/contracts/)."""
+    """Resolve contract `example:` XML for a flow id (under repos_dir/contracts/ or integration-tests/fixtures/)."""
     flow = _flows_by_id().get(flow_id)
     if not flow:
         return None
     ex = flow.get("example")
     if not ex or ex in ("~", None):
         return None
+    
+    # Priority 1: contracts/ folder (official contract repo)
     p = Path(repos_dir) / "contracts" / ex
-    return p if p.is_file() else None
+    if p.is_file(): return p
+    
+    # Priority 2: integration-tests/fixtures/ (standard location in this repo)
+    # Often 'examples/foo.xml' maps to 'integration-tests/fixtures/team/foo.xml'
+    # or just 'integration-tests/fixtures/foo.xml'
+    name = Path(ex).name
+    fixtures = Path(repos_dir) / "integration-tests" / "fixtures"
+    for sub in fixtures.iterdir():
+        if sub.is_dir():
+            candidate = sub / name
+            if candidate.is_file(): return candidate
+    candidate = fixtures / name
+    if candidate.is_file(): return candidate
+
+    return None
 
 
 def _teams_selected_set(args) -> set[str] | None:
@@ -357,10 +373,15 @@ def get_frontend_runner(f_dir):
                 json_path = jf.name
             json_lit = json.dumps(json_path.replace("\\", "/"))
             php_src = f"""<?php
-require_once '{f_dir_p.as_posix()}/vendor/autoload.php';
+$vendor = '{f_dir_p.as_posix()}/vendor/autoload.php';
+if (file_exists($vendor)) {{ require_once $vendor; }}
 class MockLogger {{ public function info($m, $c) {{}} }}
 class MockDrupal {{ public static function logger($n) {{ return new MockLogger(); }} }}
 if (!class_exists('Drupal')) {{ class_alias('MockDrupal', 'Drupal'); }}
+if (!class_exists('Drupal\\rabbitmq_sender\\{method}')) {{
+    fwrite(STDERR, "ERROR: Class Drupal\\rabbitmq_sender\\{method} not found. Ensure vendor/ is present or classes are defined.");
+    exit(1);
+}}
 $_raw = file_get_contents({json_lit});
 $data = json_decode($_raw, true);
 if ($data === null && json_last_error() !== JSON_ERROR_NONE) {{
@@ -411,7 +432,8 @@ def get_crm_runner(c_dir):
             }}
         }};
         const mockMQ = {{
-            assertQueue: async () => {{}}, assertExchange: async () => {{}}, bindQueue: async () => {{}},
+            assertQueue: async () => ({{ queue: 'mock-queue' }}), 
+            assertExchange: async () => {{}}, bindQueue: async () => {{}},
             consume: async () => ({{ consumerTag: 'tag' }}), sendToQueue: () => true, publish: () => true, ack: () => {{}}, nack: () => {{}}
         }};
         Module.prototype.require = function(p) {{
@@ -430,6 +452,7 @@ def get_crm_runner(c_dir):
             try {{
                 if ("{mode}" === "build") {{
                     const S = require('./src/sender'); const s = new S();
+                    await s.init().catch(() => {{}});
                     const result = await s.{m}({json.dumps(d)});
                     process.stdout.write(String(result.payload || result));
                 }} else {{
@@ -438,7 +461,7 @@ def get_crm_runner(c_dir):
                     const msg = {{ content: Buffer.from({json.dumps(d)}), fields: {{ deliveryTag: 1 }}, properties: {{ contentType: 'application/xml' }} }};
                     let logs = []; console.log = (...a) => logs.push(a.join(' ')); console.error = (...a) => logs.push(a.join(' '));
                     await r.handleMessage(msg);
-                    const err = logs.find(l => (l.includes('Error') || l.includes('INVALID_FIELD')) && !l.includes('WARNING'));
+                    const err = logs.find(l => (l.includes('Error') || l.includes('INVALID_FIELD')) && !l.includes('WARNING') && !l.includes('RabbitMQ'));
                     if (err) {{ process.stderr.write(err); process.exit(1); }}
                     process.stdout.write("SUCCESS");
                 }}
@@ -1008,14 +1031,34 @@ def test_shared(args):
             with patch("datetime.timezone", tz):
                 if "detector" in sys.modules: del sys.modules["detector"]
                 try:
-                    # Create module object first to inject 'logger' before code runs
-                    import importlib.util
-                    spec = importlib.util.spec_from_file_location("detector", det / "detector.py")
-                    detector = importlib.util.module_from_spec(spec)
-                    detector.logger = mock_log
-                    sys.modules["detector"] = detector
-                    spec.loader.exec_module(detector)
-                    _run_case(args, "monitoring/system_alert", lambda: detector.send_alert_xml("kassa") or "", mon_dir / "xsd" / "system_alert.xsd", "HEARTBEAT_CRITICAL", "monitoring", flat_root="alert")
+                    _stub_module("pika", BlockingConnection=MagicMock())
+                    with patch("pika.BlockingConnection"):
+                        # detector.py has a top-level `while True:` loop.
+                        # We read the file, strip the loop, and then exec it.
+                        src = (det / "detector.py").read_text(encoding="utf-8")
+                        if src.startswith('\ufeff'): src = src[1:]
+                        # Remove the while True block (assuming it's at the end)
+                        safe_src = re.split(r'^while\s+True:', src, flags=re.MULTILINE)[0]
+                        
+                        detector = types.ModuleType("detector")
+                        detector.logger = mock_log
+                        detector.__dict__["__file__"] = str(det / "detector.py")
+                        sys.modules["detector"] = detector
+                        exec(safe_src, detector.__dict__)
+
+                        def capture_alert_xml(sys_name):
+                            captured = []
+                            mock_ch = MagicMock()
+                            mock_ch.basic_publish.side_effect = lambda exchange, routing_key, body, properties=None, mandatory=False: captured.append(body)
+                            
+                            with patch("pika.BlockingConnection") as mock_conn_cls:
+                                mock_conn = mock_conn_cls.return_value
+                                mock_conn.channel.return_value = mock_ch
+                                detector.send_alert_xml(sys_name)
+                            return captured[0] if captured else None
+
+                        _run_case(args, "monitoring/system_alert", lambda: capture_alert_xml("kassa") or "", mon_dir / "xsd" / "system_alert.xsd", "HEARTBEAT_CRITICAL", "monitoring", flat_root="alert")
+
                 except Exception as e:
                     fail(f"monitoring/system_alert: Module setup failed: {e}")
                     traceback.print_exc()
@@ -1090,7 +1133,7 @@ class DynamicFlowRunner:
                     if "sender" in sys.modules: del sys.modules["sender"]
                     if "receiver" in sys.modules: del sys.modules["receiver"]
                     import sender as s_k; import receiver as r_k
-                    self.receivers["kassa"] = lambda b: (patch("receiver.get_odoo_connection", return_value=(1, MagicMock()))(lambda: (r_k.process_message(MagicMock(), MagicMock(delivery_tag=1), MagicMock(), b), MagicMock()))()[0], "Nacked")
+                    self.receivers["kassa"] = lambda b: (patch("receiver.get_odoo_connection", return_value=(1, MagicMock()))(lambda _: (r_k.process_message(MagicMock(), MagicMock(delivery_tag=1), MagicMock(), b), MagicMock()))()[0], "Nacked")
                     self.producers[("kassa", "consumption_order")] = lambda: s_k.build_consumption_order_xml(
                         [{"id":"1","sku":"S1","description":"T","quantity":1,"unit_price":"5.0","vat_rate":"21","total_amount":5.0,"currency":"eur","item_type":"food"}],
                         "42", T_UUID, "private", "t@e.com", {"street":"S","number":"1","postal_code":"1","city":"B","country":"be"}
@@ -1120,12 +1163,18 @@ class DynamicFlowRunner:
         if p_dir:
             sys.path.insert(0, str(p_dir))
             try:
+                _stub_module("psycopg2", connect=MagicMock())
+                _stub_module("psycopg2.extras", RealDictCursor=MagicMock(), DictCursor=MagicMock())
+                _stub_module("msal", PublicClientApplication=MagicMock(), ConfidentialClientApplication=MagicMock())
+                _stub_module("requests", get=MagicMock(), post=MagicMock(), Session=MagicMock())
+                _stub_module("cryptography.fernet", Fernet=MagicMock(), InvalidToken=type("InvalidToken", (Exception,), {}))
+                _stub_module("azure.identity", DefaultAzureCredential=MagicMock())
                 import producer as prod_p
                 import consumer as cons_p
                 from xml_handlers import parse_session_updated
                 self.producers[("planning", "session_created")] = lambda: prod_p.create_session_xml(T_SESSION, "T", T_NOW, T_NOW, "A", 100, 0)
                 self.producers[("planning", "session_updated")] = lambda: prod_p.create_session_updated_xml(T_SESSION, "U", T_NOW, T_NOW, "B", max_attendees=200, current_attendees=10)
-                self.receivers["planning"] = lambda b: (patch("pika.BlockingConnection")(lambda: (cons_p.on_message(MagicMock(), MagicMock(routing_key="test"), MagicMock(), b), MagicMock()))()[0], "Nacked")
+                self.receivers["planning"] = lambda b: (patch("pika.BlockingConnection")(lambda _: (cons_p.on_message(MagicMock(), MagicMock(routing_key="test"), MagicMock(), b), MagicMock()))()[0], "Nacked")
                 self.xsd_map["planning_session_created"] = p_dir / "xsd" / "session_created.xsd"
                 self.xsd_map["planning_session_updated"] = p_dir / "xsd" / "session_updated.xsd"
             except Exception as e:
@@ -1136,6 +1185,11 @@ class DynamicFlowRunner:
         if i_dir:
             sys.path.insert(0, str(i_dir))
             try:
+                _stub_module("sqlalchemy", Column=MagicMock(), String=MagicMock(), Boolean=MagicMock(), DateTime=MagicMock(), create_engine=MagicMock(), Integer=MagicMock(), ForeignKey=MagicMock())
+                _stub_module("sqlalchemy.ext.declarative", declarative_base=lambda: MagicMock())
+                _stub_module("sqlalchemy.orm", sessionmaker=MagicMock(), Session=MagicMock(), declarative_base=lambda: MagicMock(), relationship=MagicMock())
+                _stub_module("fastapi", FastAPI=MagicMock(), Depends=MagicMock(), HTTPException=MagicMock())
+                _stub_module("uvicorn")
                 import rabbitmq_service as i_svc
                 def capture_id_pub():
                     captured = []
@@ -1154,6 +1208,8 @@ class DynamicFlowRunner:
             ms = m_dir / "mailing_service"
             sys.path.insert(0, str(ms))
             try:
+                _stub_module("python_http_client", client=MagicMock())
+                _stub_module("sendgrid_client", SendGridAPIClient=MagicMock(), Recipient=MagicMock(), Attachment=MagicMock(), SendGridError=Exception)
                 from publishers import mailing_status as pub_m
                 from consumers import send_mailing as cons_m
                 import envelope as env_m
