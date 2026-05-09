@@ -15,6 +15,10 @@ Also:
   in that hop (e.g. frontend+crm for the first chain).
 - Kassa `consumption_order` Phase 3 fans out to CRM + Facturatie when those repos are
   present (same payload as in contract_flows).
+- `test_contract_example_sweep` validates every `example` + `schema` pair from
+  `contract_flows.yaml` under `contracts/` (broad static coverage). Use `--no-contract-sweep` to skip.
+- GitHub Actions: full console output is always appended to `GITHUB_STEP_SUMMARY`, even if the
+  run crashes mid-suite (e.g. `SystemExit` from an imported team module).
 """
 
 import argparse
@@ -28,6 +32,9 @@ import uuid
 import json
 import subprocess
 import importlib
+import tempfile
+import traceback
+from uuid import UUID
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -121,6 +128,11 @@ def parse_args():
     p.add_argument("--phase2-only", action="store_true")
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--no-chains", action="store_true", help="Skip multi-hop E2E chain scenarios")
+    p.add_argument(
+        "--no-contract-sweep",
+        action="store_true",
+        help="Skip validating contract repo example XML files from contract_flows.yaml",
+    )
     p.add_argument("--env", default=".env")
     return p.parse_args()
 
@@ -322,20 +334,56 @@ def _run_case(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def get_frontend_runner(f_dir):
+    """Run Drupal senders via a temp .php file + temp JSON payload (avoids quoting/parse errors in php -r)."""
+    f_dir_p = Path(f_dir).resolve()
+
     def run_php(method, data):
-        script = f"""<?php
-require_once '{f_dir}/vendor/autoload.php';
+        json_path = None
+        php_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False, encoding="utf-8"
+            ) as jf:
+                json.dump(data, jf, ensure_ascii=False)
+                json_path = jf.name
+            json_lit = json.dumps(json_path.replace("\\", "/"))
+            php_src = f"""<?php
+require_once '{f_dir_p.as_posix()}/vendor/autoload.php';
 class MockLogger {{ public function info($m, $c) {{}} }}
 class MockDrupal {{ public static function logger($n) {{ return new MockLogger(); }} }}
 if (!class_exists('Drupal')) {{ class_alias('MockDrupal', 'Drupal'); }}
-$data = json_decode('{json.dumps(data)}', true);
+$_raw = file_get_contents({json_lit});
+$data = json_decode($_raw, true);
+if ($data === null && json_last_error() !== JSON_ERROR_NONE) {{
+    fwrite(STDERR, 'ERROR: json_decode: ' . json_last_error_msg());
+    exit(2);
+}}
 $sender = new \\Drupal\\rabbitmq_sender\\{method}();
 echo $sender->buildXml($data);
 """
-        try:
-            res = subprocess.run(["php", "-r", script], capture_output=True, text=True)
-            return res.stdout if res.returncode == 0 else f"ERROR: {res.stderr}"
-        except Exception as e: return f"ERROR: {e}"
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".php", delete=False, encoding="utf-8"
+            ) as pf:
+                pf.write(php_src)
+                php_path = pf.name
+            res = subprocess.run(
+                ["php", php_path],
+                capture_output=True,
+                text=True,
+                cwd=str(f_dir_p),
+            )
+            if res.returncode != 0:
+                return f"ERROR: {res.stderr or res.stdout or 'php failed'}"
+            return res.stdout
+        except Exception as e:
+            return f"ERROR: {e}"
+        finally:
+            for p in (json_path, php_path):
+                if p:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
     return run_php
 
 def get_crm_runner(c_dir):
@@ -518,15 +566,43 @@ def test_planning(args):
     try:
         if "producer" in sys.modules: del sys.modules["producer"]; 
         if "consumer" in sys.modules: del sys.modules["consumer"]
-        import producer as prod; import consumer as cons
+        import producer as prod
+        import consumer as cons
+        from xml_handlers import parse_session_updated
         xsd = lambda n: p_dir / "xsd" / n
-        def p_rec(b):
+        def p_rec_on_message(b):
             ch = MagicMock()
-            with patch("pika.BlockingConnection"): cons.on_message(ch, MagicMock(routing_key='test'), MagicMock(), b)
+            with patch("pika.BlockingConnection"):
+                cons.on_message(ch, MagicMock(routing_key="test"), MagicMock(), b)
             return ch.basic_ack.called, "Nacked"
-        rec = {"planning": p_rec}
-        _run_case(args, "planning/session_created", lambda: prod.create_session_xml(T_SESSION, "T", T_NOW, T_NOW, "A", 100, 0), xsd("session_created.xsd"), "session_created", "planning", receiver_fns=rec)
-        _run_case(args, "planning/session_updated", lambda: prod.create_session_updated_xml(T_SESSION, "U", T_NOW, T_NOW, "B", max_attendees=200, current_attendees=10), xsd("session_updated.xsd"), "session_updated", "planning", receiver_fns=rec)
+        def p_rec_session_updated(b):
+            ch = MagicMock()
+            with patch("pika.BlockingConnection"):
+                msg = parse_session_updated(b)
+                if msg is None:
+                    return False, "parse_session_updated returned None"
+                cons.handle_session_updated(msg, ch, 1)
+            return ch.basic_ack.called, "Nacked"
+        _run_case(
+            args,
+            "planning/session_created",
+            lambda: prod.create_session_xml(T_SESSION, "T", T_NOW, T_NOW, "A", 100, 0),
+            xsd("session_created.xsd"),
+            "session_created",
+            "planning",
+            receiver_fns={"planning": p_rec_on_message},
+        )
+        _run_case(
+            args,
+            "planning/session_updated",
+            lambda: prod.create_session_updated_xml(
+                T_SESSION, "U", T_NOW, T_NOW, "B", max_attendees=200, current_attendees=10
+            ),
+            xsd("session_updated.xsd"),
+            "session_updated",
+            "planning",
+            receiver_fns={"planning": p_rec_session_updated},
+        )
     except Exception as e: fail(f"Planning setup error: {e}")
 
 def test_facturatie(args):
@@ -555,7 +631,18 @@ def test_facturatie(args):
             return ch.basic_ack.called, "Nacked"
         rec = {"facturatie": f_rec}
         _run_case(args, "facturatie/send_mailing", lambda: s.build_invoice_created_notification_xml("I1","t@e.com",T_CORR,"J","J","C1",T_UUID), xsd("send_mailing.xsd"), "send_mailing", "facturatie", receiver_fns=rec)
-        _run_case(args, "facturatie/payment_confirmed", lambda: s.build_payment_confirmed_xml("I1", T_UUID, "75.00", "eur", "online", paid_at=T_NOW, source="facturatie", status="paid"), xsd("payment_registered.xsd"), "payment_registered", "facturatie", receiver_fns=rec)
+        _run_case(
+            args,
+            "facturatie/payment_confirmed",
+            lambda: s.build_payment_confirmed_xml(
+                "I1", T_UUID, "75.00", "eur", "online",
+                paid_at=T_NOW, source="facturatie", status="paid", due_date=T_DATE,
+            ),
+            xsd("payment_registered.xsd"),
+            "payment_registered",
+            "facturatie",
+            receiver_fns=rec,
+        )
     except Exception as e: fail(f"Facturatie setup error: {e}")
 
 def test_crm(args):
@@ -602,42 +689,91 @@ def test_identity(args):
     if not team_applies(args, "identity"):
         return
     header("Identity")
-    repos = Path(args.repos_dir); i_dir = find_repo(repos, "identity-service")
-    if not i_dir: fail("Identity repo not found"); return
+    repos = Path(args.repos_dir)
+    i_dir = find_repo(repos, "identity-service")
+    if not i_dir:
+        fail("Identity repo not found")
+        return
     sys.path.insert(0, str(i_dir))
-    _stub_module("database", SessionLocal=MagicMock()); _stub_module("defusedxml.ElementTree", fromstring=etree.fromstring)
+    _stub_module("database", SessionLocal=MagicMock())
+    _stub_module("defusedxml.ElementTree", fromstring=etree.fromstring)
     import rabbitmq_service as i_svc
+    id_xsd = repos / "contracts" / "xsd" / "identity_event.xsd"
     def capture_pub():
         captured = []
         with patch("rabbitmq_service.get_rabbitmq_connection") as mock_conn:
             mock_ch = mock_conn.return_value.channel.return_value
-            mock_ch.basic_publish.side_effect = lambda *a,**k: captured.append(k.get("body",b"").decode("utf-8"))
-            i_svc.publish_user_created(T_UUID, "t@e.com", "id-service")
+            mock_ch.basic_publish.side_effect = lambda *a, **k: captured.append(
+                k.get("body", b"").decode("utf-8")
+            )
+            i_svc.publish_user_created(UUID(T_UUID), "t@e.com", "id-service")
         return captured[0] if captured else None
-    def i_rec(b):
-        ch = MagicMock()
-        with patch("rabbitmq_service.SessionLocal", return_value=MagicMock()): i_svc.callback(ch, MagicMock(delivery_tag=1), MagicMock(), b)
-        return ch.basic_ack.called, "Nacked"
-    _run_case(args, "identity/user_created", capture_pub, repos / "contracts/xsd/identity_event.xsd", "UserCreated", "id-service", flat_root="user_event", receiver_fns={"identity": i_rec})
+    _run_case(
+        args,
+        "identity/user_created",
+        capture_pub,
+        id_xsd,
+        "UserCreated",
+        "id-service",
+        flat_root="user_event",
+    )
 
 def test_mailing(args):
     if not team_applies(args, "mailing"):
         return
     header("Mailing")
-    repos = Path(args.repos_dir); m_dir = find_repo(repos, "Mailing")
-    if not m_dir: fail("Mailing repo not found"); return
-    ms = m_dir / "mailing_service"; sys.path.insert(0, str(ms))
-    _stub_module("sendgrid_client", SendGridAPIClient=MagicMock()); _stub_module("envelope")
-    from publishers import mailing_status, logs
+    repos = Path(args.repos_dir)
+    m_dir = find_repo(repos, "Mailing")
+    if not m_dir:
+        fail("Mailing repo not found")
+        return
+    ms = m_dir / "mailing_service"
+    sys.path.insert(0, str(ms))
+    _stub_module("sendgrid_client", SendGridAPIClient=MagicMock())
+    from publishers import mailing_status
+    from consumers import send_mailing as send_mailing_consumer
+    import envelope
     xsd = lambda n: ms / "schemas" / n
-    _run_case(args, "mailing/mailing_status", lambda: etree.tostring(mailing_status._build_element(correlation_id=T_CORR, campaign_id="C1", subject="S", sent=1, delivered=1, bounced=0, opened=0, bounced_emails=[], status="completed"), encoding="unicode"), xsd("mailing_status.xsd"), "mailing_status", "mailing")
+    _run_case(
+        args,
+        "mailing/mailing_status",
+        lambda: etree.tostring(
+            mailing_status._build_element(
+                correlation_id=T_CORR,
+                campaign_id="C1",
+                subject="S",
+                sent=1,
+                delivered=1,
+                bounced=0,
+                opened=0,
+                bounced_emails=[],
+                status="completed",
+            ),
+            encoding="unicode",
+        ),
+        xsd("mailing_status.xsd"),
+        "mailing_status",
+        "mailing",
+    )
+    send_xsd = etree.XMLSchema(etree.parse(xsd("send_mailing")))
     def m_rec(b):
-        import main as m_main
         ch = MagicMock()
-        with patch("main.SendGridAPIClient"): m_main.callback(ch, MagicMock(delivery_tag=1), MagicMock(), b)
-        return ch.basic_ack.called, "Nacked"
-    m_xml = f'<message><header><message_id>{T_CORR}</message_id><timestamp>{T_NOW}</timestamp><source>crm</source><type>send_mailing</type><version>2.0</version><correlation_id>{T_CORR}</correlation_id></header><body><campaign_id>C1</campaign_id><subject>S</subject><mail_type>welcome</mail_type><recipients><recipient><email>t@e.com</email><identity_uuid>{T_UUID}</identity_uuid></recipient></recipients></body></message>'
-    _run_case(args, "mailing/send_mailing_in", lambda: m_xml, repos / "contracts/xsd/mailing_send.xsd", "send_mailing", "crm", receiver_fns={"mailing": m_rec})
+        env = envelope.parse_and_validate(b, send_xsd)
+        with patch.dict(os.environ, {"FROM_EMAIL": "audit@test.local"}, clear=False):
+            with patch("sendgrid_client.send_template_email", return_value=MagicMock(rejected=[])):
+                with patch("templates.resolve_template_id", return_value="d-test-template"):
+                    send_mailing_consumer.handle(env, ch)
+        return True, ""
+    m_xml = f'<message><header><message_id>{T_CORR}</message_id><timestamp>{T_NOW}</timestamp><source>crm</source><type>send_mailing</type><version>2.0</version><correlation_id>{T_CORR}</correlation_id></header><body><campaign_id>C1</campaign_id><subject>S</subject><mail_type>welcome</mail_type><recipients><recipient><email>t@e.com</email><identity_uuid>{T_UUID}</identity_uuid><contact><first_name>T</first_name><last_name>U</last_name></contact></recipient></recipients></body></message>'
+    _run_case(
+        args,
+        "mailing/send_mailing_in",
+        lambda: m_xml,
+        repos / "contracts" / "xsd" / "mailing_send.xsd",
+        "send_mailing",
+        "crm",
+        receiver_fns={"mailing": m_rec},
+    )
 
 def test_e2e_chains(args):
     """
@@ -747,6 +883,69 @@ def test_e2e_chains(args):
         else:
             skip("E2E crm→kassa skipped (CRM or Kassa repo missing)")
 
+
+def test_contract_example_sweep(args):
+    """
+    For every flow in contract_flows.yaml that defines both `example` and `schema`,
+    validate the checked-in example XML against the checked-in XSD under contracts/.
+    """
+    if getattr(args, "no_contract_sweep", False):
+        return
+    header("Contract examples (contract_flows.yaml → XSD)")
+    repos = Path(args.repos_dir)
+    contracts_root = repos / "contracts"
+    if not contracts_root.is_dir():
+        warn("contracts/ not found — example sweep skipped")
+        return
+    if not _YAML_AVAILABLE:
+        skip("PyYAML missing — cannot read contract_flows.yaml")
+        return
+    if not _LXML_AVAILABLE:
+        skip("lxml missing — cannot validate XSD")
+        return
+    for fid in sorted(_flows_by_id().keys()):
+        flow = _flows_by_id()[fid]
+        ex = flow.get("example")
+        sc = flow.get("schema")
+        if not ex or ex in ("~", None) or not sc or sc in ("~", None):
+            continue
+        epath = contracts_root / ex
+        spath = contracts_root / sc
+        name = f"contract-sweep/{fid}"
+        print(f"\n  [{name}]")
+        _state["tests"] += 1
+        res = {
+            "name": name,
+            "p1": "fail",
+            "p3": "skip",
+            "error": "",
+            "proc_error": "",
+            "used_fallback": False,
+        }
+        if not epath.is_file():
+            fail(f"Example file missing: {epath}")
+            res["error"] = "example file missing"
+        elif not spath.is_file():
+            fail(f"Schema file missing: {spath}")
+            res["error"] = "schema file missing"
+        else:
+            try:
+                xml_str = epath.read_text(encoding="utf-8")
+                valid, err = validate_against_xsd(xml_str, spath)
+                if valid:
+                    ok(f"Phase 1: example validates ({spath.name})")
+                    res["p1"] = "pass"
+                else:
+                    fail(f"Phase 1: XSD invalid: {err}")
+                    res["error"] = err or "XSD invalid"
+            except OSError as e:
+                fail(f"Read error: {e}")
+                res["error"] = str(e)
+        if res["p1"] == "fail":
+            _state["failures"] += 1
+        _state["results"].append(res)
+
+
 def test_shared(args):
     if not (team_applies(args, "heartbeat") or team_applies(args, "monitoring")):
         return
@@ -755,9 +954,26 @@ def test_shared(args):
     h_dir = find_repo(repos, "heartbeat")
     if h_dir and team_applies(args, "heartbeat"):
         sys.path.insert(0, str(h_dir))
-        with patch.dict(os.environ, {"SYSTEM_NAME":"test","TARGETS":"127.0.0.1:80","RABBITMQ_HOST":"127.0.0.1"}):
+        hb_env = {
+            "SYSTEM_NAME": "test",
+            "TARGETS": "127.0.0.1:80",
+            "RABBITMQ_HOST": "127.0.0.1",
+            "RABBITMQ_USER": "guest",
+            "RABBITMQ_PASS": "guest",
+            "RABBITMQ_VHOST": "/",
+        }
+        with patch.dict(os.environ, hb_env, clear=False):
+            if "sidecar" in sys.modules:
+                del sys.modules["sidecar"]
             import sidecar
-            _run_case(args, "heartbeat/heartbeat", lambda: sidecar.build_heartbeat_xml("hb_service", "online", 3600), h_dir / "heartbeat.xsd", "heartbeat", "hb_service")
+            _run_case(
+                args,
+                "heartbeat/heartbeat",
+                lambda: sidecar.build_heartbeat_xml("hb_service", "online", 3600),
+                h_dir / "heartbeat.xsd",
+                "heartbeat",
+                "hb_service",
+            )
     mon_dir = find_repo(repos, "monitoring")
     if mon_dir and team_applies(args, "monitoring"):
         det = mon_dir / "detector"; sys.path.insert(0, str(det))
@@ -766,7 +982,8 @@ def test_shared(args):
         _run_case(args, "monitoring/system_alert", lambda: detector.send_alert_xml("kassa") or "", mon_dir / "xsd" / "system_alert.xsd", "HEARTBEAT_CRITICAL", "monitoring", flat_root="alert")
 
 def main():
-    args = parse_args(); load_env(args.env)
+    args = parse_args()
+    load_env(args.env)
     sum_file = os.getenv("GITHUB_STEP_SUMMARY")
     capture = StringIO()
     orig_out, orig_err = sys.stdout, sys.stderr
@@ -775,37 +992,59 @@ def main():
         sys.stderr = TeeStream(orig_err, capture)
 
     exit_code = 0
+    abort_msg = None
     try:
         if not _YAML_AVAILABLE:
             warn("PyYAML not installed — `contract_flows.yaml` fallbacks disabled (pip install PyYAML)")
         print(f"\n{BOLD}COMPREHENSIVE BEHAVIORAL AUDIT — v2.3{RESET}")
         print(f"Goal: Executing production code for EVERY flow across ALL teams.")
-        test_frontend(args); test_kassa(args); test_planning(args); test_facturatie(args)
-        test_crm(args); test_identity(args); test_mailing(args)
-        test_e2e_chains(args); test_shared(args)
+        test_frontend(args)
+        test_kassa(args)
+        test_planning(args)
+        test_facturatie(args)
+        test_crm(args)
+        test_identity(args)
+        test_mailing(args)
+        test_e2e_chains(args)
+        test_contract_example_sweep(args)
+        test_shared(args)
         tot, fail_count = _state["tests"], _state["failures"]
-        print(f"\n{'═'*60}\n{tot-fail_count} PASSED / {fail_count} FAILED")
+        print(f"\n{'═'*60}\n{tot - fail_count} PASSED / {fail_count} FAILED")
         exit_code = 1 if fail_count else 0
-        if sum_file:
-            with open(sum_file, "a", encoding="utf-8") as f:
-                f.write("## 🧪 Comprehensive Behavioral Audit — `test_contract_full.py`\n\n")
-                f.write("| Test Case | Phase 1 (XSD) | Phase 3 (Logic) |\n|---|---|---|\n")
-                for r in _state["results"]:
-                    p1 = "✅" if r["p1"] == "pass" else "❌" if r["p1"] == "fail" else "⏭️"
-                    p3 = "✅" if r["p3"] == "pass" else "❌" if r["p3"] == "fail" else "⏭️"
-                    f.write(f"| `{r['name']}` | {p1} | {p3} |\n")
-                failed = [r for r in _state["results"] if r["p1"] == "fail" or r["p3"] == "fail"]
-                if failed:
-                    f.write("\n### ⚠️ Behavioral failures\n\n")
-                    for r in failed:
-                        if r["p1"] == "fail":
-                            f.write(f"**`{r['name']} (XSD)`** — {r['error']}\n\n")
-                        if r["p3"] == "fail":
-                            f.write(f"**`{r['name']} (Logic)`** — {r['proc_error']}\n\n")
-                f.write(markdown_full_log(capture.getvalue()))
+    except SystemExit as e:
+        abort_msg = f"SystemExit({e.code!r})"
+        exit_code = e.code if isinstance(e.code, int) else 1
+    except Exception as e:
+        abort_msg = f"{type(e).__name__}: {e}"
+        traceback.print_exc()
+        exit_code = 1
     finally:
         if sum_file:
             sys.stdout, sys.stderr = orig_out, orig_err
+            try:
+                with open(sum_file, "a", encoding="utf-8") as f:
+                    f.write("## 🧪 Comprehensive Behavioral Audit — `test_contract_full.py`\n\n")
+                    if abort_msg:
+                        f.write(
+                            f"⚠️ **Run interrupted:** {abort_msg}\n\n"
+                            "_Partial results below; see full console log for the traceback._\n\n"
+                        )
+                    f.write("| Test Case | Phase 1 (XSD) | Phase 3 (Logic) |\n|---|---|---|\n")
+                    for r in _state["results"]:
+                        p1 = "✅" if r["p1"] == "pass" else "❌" if r["p1"] == "fail" else "⏭️"
+                        p3 = "✅" if r["p3"] == "pass" else "❌" if r["p3"] == "fail" else "⏭️"
+                        f.write(f"| `{r['name']}` | {p1} | {p3} |\n")
+                    failed = [r for r in _state["results"] if r["p1"] == "fail" or r["p3"] == "fail"]
+                    if failed:
+                        f.write("\n### ⚠️ Behavioral failures\n\n")
+                        for r in failed:
+                            if r["p1"] == "fail":
+                                f.write(f"**`{r['name']} (XSD)`** — {r['error']}\n\n")
+                            if r["p3"] == "fail":
+                                f.write(f"**`{r['name']} (Logic)`** — {r['proc_error']}\n\n")
+                    f.write(markdown_full_log(capture.getvalue()))
+            except OSError:
+                pass
 
     sys.exit(exit_code)
 

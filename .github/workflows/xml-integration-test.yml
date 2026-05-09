@@ -118,7 +118,7 @@ jobs:
           extensions: dom, libxml, simplexml
 
       - name: Install shared dependencies
-        run: pip install --upgrade pip && pip install lxml pika python-dotenv defusedxml mysql-connector-python
+        run: pip install --upgrade pip && pip install lxml pika PyYAML python-dotenv defusedxml mysql-connector-python
 
       - name: Install CRM Node.js dependencies
         if: ${{ hashFiles('CRM/package.json') != '' }}
