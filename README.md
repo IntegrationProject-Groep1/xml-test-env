@@ -10,8 +10,6 @@ Centrale testhub voor alle XML-berichtflows binnen het integratieproject.
 |---|---|---|
 | `test_contract_full.py` | Importeert echte team builder-functies, bouwt XML, valideert tegen team-XSDs + contract-regels | Builder compliance |
 | `test_integration.py` | Verstuurt XML naar de live RabbitMQ op de VM, verifieert routing via shadow queues | VM routing |
-| `check_rabbit.py` | Snelle connectivity check | Debuggen |
-| `setup_queues.py` | Configureert exchanges en queues op een schone RabbitMQ | Eenmalig / reset |
 
 ---
 
@@ -104,13 +102,9 @@ Je kunt daar ook één van de twee jobs skippen via de checkboxen.
 xml-test-env/
 ├── .github/workflows/
 │   └── xml-integration-test.yml  — CI/CD workflow (2 jobs)
-├── examples/                      — Voorbeeld XML bestanden per message type
-├── schemas/                       — XSD referentie (team schemas zijn authoritatief)
 ├── contract_flows.yaml            — Centrale registry van alle message flows
 ├── test_contract_full.py          — Builder compliance test
-├── test_integration.py            — VM routing test
-├── check_rabbit.py                — RabbitMQ connectivity check
-└── setup_queues.py                — Queue/exchange setup utility
+└── test_integration.py            — VM routing test
 ```
 
 ---
