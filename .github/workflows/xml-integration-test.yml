@@ -4,7 +4,7 @@ name: Integration Test Suite
 # Two independent jobs:
 #
 #  builder-compliance  —  Checks out all team repos (public, no token needed)
-#                         and runs test_contract_full.py Phase 1.
+#                         and runs test_contract_full.py Phase 1 & 3.
 #                         Runs on every push/PR — no VM access required.
 #
 #  vm-routing          —  Runs test_integration.py against the live RabbitMQ
@@ -43,7 +43,7 @@ jobs:
   # JOB 1: Builder compliance
   # ═══════════════════════════════════════════════════════════════════════════
   builder-compliance:
-    name: Builder Compliance (Phase 1)
+    name: Behavioral Audit (Phase 1 & 3)
     runs-on: ubuntu-latest
     if: ${{ !inputs.skip_builder }}
 
@@ -76,14 +76,59 @@ jobs:
           path: Facturatie
         continue-on-error: true
 
+      - name: Checkout CRM
+        uses: actions/checkout@v4
+        with:
+          repository: IntegrationProject-Groep1/CRM
+          path: CRM
+        continue-on-error: true
+
+      - name: Checkout Heartbeat
+        uses: actions/checkout@v4
+        with:
+          repository: IntegrationProject-Groep1/heartbeat
+          path: heartbeat
+        continue-on-error: true
+
+      - name: Checkout Identity
+        uses: actions/checkout@v4
+        with:
+          repository: IntegrationProject-Groep1/identity-service
+          path: identity-service
+        continue-on-error: true
+
+      - name: Checkout Mailing
+        uses: actions/checkout@v4
+        with:
+          repository: IntegrationProject-Groep1/Mailing
+          path: Mailing
+        continue-on-error: true
+
+      - name: Checkout Monitoring
+        uses: actions/checkout@v4
+        with:
+          repository: IntegrationProject-Groep1/monitoring
+          path: monitoring
+        continue-on-error: true
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
+      - name: Set up Node.js for CRM
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
       - name: Install shared dependencies
-        run: pip install --upgrade pip && pip install lxml pika python-dotenv defusedxml
+        run: pip install --upgrade pip && pip install lxml pika python-dotenv defusedxml mysql-connector-python
+
+      - name: Install CRM Node.js dependencies
+        if: ${{ hashFiles('CRM/package.json') != '' }}
+        run: cd CRM && npm install
+        continue-on-error: true
 
       - name: Install Kassa dependencies
         if: ${{ hashFiles('Kassa/requirements.txt') != '' }}
@@ -100,10 +145,9 @@ jobs:
         run: pip install -r Facturatie/requirements.txt
         continue-on-error: true
 
-      - name: Run builder compliance
+      - name: Run comprehensive behavioral audit
         run: |
           python xml-test-env/test_contract_full.py \
-            --phase1-only \
             --repos-dir "$GITHUB_WORKSPACE"
 
   # ═══════════════════════════════════════════════════════════════════════════
@@ -144,11 +188,3 @@ jobs:
           RABBIT_MGMT_PORT: ${{ secrets.RABBIT_MGMT_PORT }}
           RABBIT_USER:      ${{ secrets.RABBIT_USER }}
           RABBIT_PASS:      ${{ secrets.RABBIT_PASS }}
-
-      - name: Write routing summary
-        if: always()
-        run: |
-          echo "## VM Routing — \`test_integration.py\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "Target: \`${{ secrets.RABBIT_HOST }}:${{ secrets.RABBIT_PORT }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "See step log above for per-flow pass/fail details." >> "$GITHUB_STEP_SUMMARY"

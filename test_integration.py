@@ -2346,6 +2346,19 @@ def main():
     else:
         print(f"  Failures  : {RED}{BOLD}{_state['failures']}{RESET}")
     print()
+
+    sum_file = os.getenv("GITHUB_STEP_SUMMARY")
+    if sum_file:
+        with open(sum_file, "a", encoding="utf-8") as f:
+            f.write(f"## 🌐 VM Routing — `test_integration.py`\n\n")
+            f.write(f"**Target:** `{cfg.host}:{cfg.port}`\n\n")
+            f.write(f"**Tests Run:** {_state['tests']}\n")
+            if _state["failures"] == 0:
+                f.write(f"**Result:** ✅ ALL PASSED\n\n")
+            else:
+                f.write(f"**Result:** ❌ {_state['failures']} FAILED\n\n")
+            f.write(f"*(See the Action logs above for detailed flow-by-flow verification)*\n\n")
+
     sys.exit(0 if _state["failures"] == 0 else 1)
 
 
