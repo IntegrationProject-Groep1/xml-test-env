@@ -968,6 +968,7 @@ def test_shared(args):
         def local_build_heartbeat_xml(system_name, status, uptime):
             import xml.etree.ElementTree as ET
             import uuid
+            from datetime import datetime, timezone
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             message = ET.Element("message")
             header = ET.SubElement(message, "header")
@@ -994,22 +995,30 @@ def test_shared(args):
         det = mon_dir / "detector"; sys.path.insert(0, str(det))
         from datetime import timezone as tz
         _stub_module("elasticsearch", Elasticsearch=MagicMock())
-        _stub_module("logging", getLogger=lambda n: MagicMock())
-        # Provide globals that detector.py might expect at module level
-        import datetime
+        mock_log = MagicMock()
+        _stub_module("logging", getLogger=lambda n: mock_log)
         mon_env = {
             "RABBITMQMONITORING_USER": "guest",
             "RABBITMQMONITORING_PASS": "guest",
             "RABBITMQ_HOST": args.host,
+            "RABBITMQ_PORT": str(args.port),
+            "RABBITMQ_VHOST": args.vhost,
         }
         with patch.dict(os.environ, mon_env, clear=False):
             with patch("datetime.timezone", tz):
                 if "detector" in sys.modules: del sys.modules["detector"]
                 try:
-                    import detector
+                    # Create module object first to inject 'logger' before code runs
+                    import importlib.util
+                    spec = importlib.util.spec_from_file_location("detector", det / "detector.py")
+                    detector = importlib.util.module_from_spec(spec)
+                    detector.logger = mock_log
+                    sys.modules["detector"] = detector
+                    spec.loader.exec_module(detector)
                     _run_case(args, "monitoring/system_alert", lambda: detector.send_alert_xml("kassa") or "", mon_dir / "xsd" / "system_alert.xsd", "HEARTBEAT_CRITICAL", "monitoring", flat_root="alert")
                 except Exception as e:
-                    fail(f"monitoring/system_alert: Module import failed: {e}")
+                    fail(f"monitoring/system_alert: Module setup failed: {e}")
+                    traceback.print_exc()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DYNAMIC E2E RUNNER
