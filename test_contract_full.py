@@ -185,12 +185,13 @@ def contract_example_path(repos_dir: Path, flow_id: str) -> Path | None:
     # or just 'integration-tests/fixtures/foo.xml'
     name = Path(ex).name
     fixtures = Path(repos_dir) / "integration-tests" / "fixtures"
-    for sub in fixtures.iterdir():
-        if sub.is_dir():
-            candidate = sub / name
-            if candidate.is_file(): return candidate
-    candidate = fixtures / name
-    if candidate.is_file(): return candidate
+    if fixtures.is_dir():
+        for sub in fixtures.iterdir():
+            if sub.is_dir():
+                candidate = sub / name
+                if candidate.is_file(): return candidate
+        candidate = fixtures / name
+        if candidate.is_file(): return candidate
 
     return None
 
@@ -1165,7 +1166,7 @@ class DynamicFlowRunner:
             try:
                 _stub_module("psycopg2", connect=MagicMock())
                 _stub_module("psycopg2.extras", RealDictCursor=MagicMock(), DictCursor=MagicMock())
-                _stub_module("msal", PublicClientApplication=MagicMock(), ConfidentialClientApplication=MagicMock())
+                _stub_module("msal", PublicClientApplication=MagicMock(), ConfidentialClientApplication=MagicMock(), SerializableTokenCache=MagicMock())
                 _stub_module("requests", get=MagicMock(), post=MagicMock(), Session=MagicMock())
                 _stub_module("cryptography.fernet", Fernet=MagicMock(), InvalidToken=type("InvalidToken", (Exception,), {}))
                 _stub_module("azure.identity", DefaultAzureCredential=MagicMock())
