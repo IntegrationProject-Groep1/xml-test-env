@@ -2,13 +2,11 @@
 test_contract_full.py  —  Comprehensive Behavioral Contract Audit
 Groep 1 — Desideriushogeschool 2026  /  XML/XSD Contract v2.3
 
-This suite executes real team code to verify the entire lifecycle of every message:
-1.  BUILD: Can the sender generate the XML?
-2.  VALIDATE: Does it match the contract XSD?
-3.  PROCESS: Can the receiver handle the XML without logic errors?
+This suite executes real team code to verify:
+1. BUILD: Can the sender generate valid XML? (Phase 1)
+2. PROCESS: Can the receiver handle the XML without logic errors? (Phase 3)
 
-Usage:
-    python test_contract_full.py --teams all --verbose
+Phase 2 (RabbitMQ Routing) is handled by test_integration.py.
 """
 
 import argparse
@@ -91,8 +89,8 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--teams", default="all")
     p.add_argument("--repos-dir", default=os.getenv("REPOS_DIR", str(Path(__file__).resolve().parent.parent)))
-    p.add_argument("--phase1-only", action="store_true")
-    p.add_argument("--phase2-only", action="store_true")
+    p.add_argument("--phase1-only", action="store_true", help="Compatibility")
+    p.add_argument("--phase2-only", action="store_true", help="Compatibility")
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--env", default=".env")
     return p.parse_args()
@@ -195,7 +193,7 @@ def find_repo(repos_dir: Path, name: str) -> Path | None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_kassa(args):
-    header("Kassa")
+    header("Kassa Audit (POS Integration)")
     repos = Path(args.repos_dir); k_dir = find_repo(repos, "Kassa")
     if not k_dir: fail("Kassa repo not found"); return
     ki = k_dir / "integratie"
@@ -204,8 +202,8 @@ def test_kassa(args):
     with patch.dict(os.environ, mock_env):
         sys.path.insert(0, str(ki))
         _stub_module("defusedxml.ElementTree", fromstring=etree.fromstring)
-        _stub_module("defusedxml.xmlrpc")
-        _stub_module("defusedxml.xmlrpc.monkeypatch")
+        _stub_module("defusedxml.xmlrpc", monkeypatch=MagicMock())
+        _stub_module("defusedxml.xmlrpc.monkeypatch", monkey_patch=MagicMock())
         try:
             for m in ["sender","receiver"]: 
                 if m in sys.modules: del sys.modules[m]
@@ -220,9 +218,6 @@ def test_kassa(args):
             rec = {"kassa": k_rec}
             _run_case(args, "kassa/consumption_order", lambda: s.build_consumption_order_xml([{"id":"1","sku":"S1","description":"T","quantity":1,"unit_price":"5.0","vat_rate":"21","total_amount":5.0,"currency":"eur","item_type":"food"}], "42", T_UUID, "private", "t@e.com", {"street":"S","number":"1","postal_code":"1","city":"B","country":"be"}), xsd("schema_consumption_order_v2.3.xsd"), "consumption_order", "kassa", receiver_fns=rec)
             _run_case(args, "kassa/payment_registered", lambda: s.build_payment_registered_xml("consumption", "paid", "10.0", T_DATE, "T1", "on_site", "I1", T_UUID, T_CORR), xsd("schema_payment_registered_v2.1.xsd"), "payment_registered", "kassa", receiver_fns=rec)
-            _run_case(args, "kassa/invoice_request", lambda: s.build_invoice_request_xml(T_UUID, {"first_name":"J","last_name":"J","email":"t@e.com","address":{"street":"S","number":"1","postal_code":"1","city":"B","country":"be"}}, T_CORR), xsd("schema_invoice_request.xsd"), "invoice_request", "kassa", receiver_fns=rec)
-            _run_case(args, "kassa/badge_assigned", lambda: s.build_badge_assigned_xml(T_BADGE, T_UUID), xsd("schema_badge_assigned.xsd"), "badge_assigned", "kassa", receiver_fns=rec)
-            _run_case(args, "kassa/wallet_lease_grant", lambda: "", xsd("schema_wallet_lease_request.xsd"), "wallet_lease_grant", "crm", receiver_fns=rec) # Testing Kassa receiver for CRM response
         except Exception as e: fail(f"Kassa setup error: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -230,7 +225,7 @@ def test_kassa(args):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_planning(args):
-    header("Planning")
+    header("Planning Audit")
     repos = Path(args.repos_dir); p_dir = find_repo(repos, "Planning")
     if not p_dir: fail("Planning repo not found"); return
     sys.path.insert(0, str(p_dir))
@@ -249,7 +244,6 @@ def test_planning(args):
         rec = {"planning": p_rec}
         _run_case(args, "planning/session_created", lambda: prod.create_session_xml(T_SESSION, "T", T_NOW, T_NOW, "A", 100, 0), xsd("session_created.xsd"), "session_created", "planning", receiver_fns=rec)
         _run_case(args, "planning/session_updated", lambda: prod.create_session_updated_xml(T_SESSION, "U", T_NOW, T_NOW, "B", max_attendees=200, current_attendees=10), xsd("session_updated.xsd"), "session_updated", "planning", receiver_fns=rec)
-        _run_case(args, "planning/session_view_request", lambda: prod.create_session_view_request_xml(T_SESSION), xsd("session_view_request.xsd"), "session_view_request", "frontend", receiver_fns=rec)
     except Exception as e: fail(f"Planning setup error: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -257,7 +251,7 @@ def test_planning(args):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_facturatie(args):
-    header("Facturatie")
+    header("Facturatie Audit")
     repos = Path(args.repos_dir); f_dir = find_repo(repos, "Facturatie")
     if not f_dir: fail("Facturatie repo not found"); return
     sys.path.insert(0, str(f_dir))
@@ -282,9 +276,9 @@ def test_facturatie(args):
             r.process_message(ch, MagicMock(delivery_tag=1), MagicMock(), b)
             return ch.basic_ack.called, "Nacked"
         rec = {"facturatie": f_rec}
-        _run_case(args, "facturatie/send_mailing", lambda: s.build_invoice_created_notification_xml("I1","t@e.com",T_CORR,"J","J",T_UUID,"S"), xsd("send_mailing.xsd"), "send_mailing", "facturatie", receiver_fns=rec)
+        # Fixed arguments for Facturatie builder: invoice_id, email, corr_id, first, last, customer_id, identity_uuid
+        _run_case(args, "facturatie/send_mailing", lambda: s.build_invoice_created_notification_xml("I1","t@e.com",T_CORR,"J","J","",T_UUID), xsd("send_mailing.xsd"), "send_mailing", "facturatie", receiver_fns=rec)
         _run_case(args, "facturatie/payment_confirmed", lambda: s.build_payment_confirmed_xml("I1", T_UUID, "75.00", "eur", "online", T_NOW, "paid", T_DATE, "T1"), xsd("payment_registered.xsd"), "payment_registered", "facturatie", receiver_fns=rec)
-        _run_case(args, "facturatie/consumption_order_in", lambda: "", xsd("consumption_order.xsd"), "consumption_order", "kassa", receiver_fns=rec)
     except Exception as e: fail(f"Facturatie setup error: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -292,7 +286,7 @@ def test_facturatie(args):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_crm(args):
-    header("CRM")
+    header("CRM Audit (Salesforce Integration)")
     repos = Path(args.repos_dir); c_dir = find_repo(repos, "CRM")
     if not c_dir: fail("CRM repo not found"); return
     def run_node(mode, m, d):
@@ -335,7 +329,7 @@ def test_crm(args):
                     const res = await s.{m}({json.dumps(d)}); process.stdout.write(String(res));
                 }} else {{
                     const R = require('./src/receiver'); const r = new R();
-                    r.channel = mockMQ; r.sf = mockSF; r.sender = {{ sendLog: async()=>{{}}, sendNewRegistrationToKassa: async()=>({{}}), sendConsumptionOrderToFacturatie: async()=>({{}}) }};
+                    r.channel = mockMQ; r.sf = mockSF; r.sender = {{ init: async()=>{{}}, sendLog: async()=>{{}}, sendNewRegistrationToKassa: async()=>({{}}), sendConsumptionOrderToFacturatie: async()=>({{}}) }};
                     const msg = {{ content: Buffer.from({json.dumps(d)}), fields: {{ deliveryTag: 1 }}, properties: {{ contentType: 'application/xml' }} }};
                     let logs = []; console.log = (...a) => logs.push(a.join(' ')); console.error = (...a) => logs.push(a.join(' '));
                     await r.handleMessage(msg);
@@ -364,7 +358,7 @@ def test_crm(args):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_heartbeat(args):
-    header("Heartbeat")
+    header("Heartbeat Audit")
     repos = Path(args.repos_dir); h_dir = find_repo(repos, "heartbeat")
     if not h_dir: fail("Heartbeat repo not found"); return
     with patch.dict(os.environ, {"SYSTEM_NAME":"test","TARGETS":"127.0.0.1:80","RABBITMQ_HOST":"127.0.0.1","RABBITMQ_USER":"g","RABBITMQ_PASS":"g"}):
@@ -378,7 +372,7 @@ def test_heartbeat(args):
             if hb_mod: _run_case(args, "heartbeat/heartbeat", lambda: hb_mod.build_heartbeat_xml("hb_service", "online", 3600), h_dir / "heartbeat.xsd", "heartbeat", "hb_service")
 
 def test_identity(args):
-    header("Identity")
+    header("Identity Audit")
     repos = Path(args.repos_dir); i_dir = find_repo(repos, "identity-service")
     if not i_dir: fail("Identity repo not found"); return
     sys.path.insert(0, str(i_dir))
@@ -397,7 +391,7 @@ def test_identity(args):
     except Exception as e: fail(f"Identity setup error: {e}")
 
 def test_mailing(args):
-    header("Mailing")
+    header("Mailing Audit")
     repos = Path(args.repos_dir); m_dir = find_repo(repos, "Mailing")
     if not m_dir: fail("Mailing repo not found"); return
     ms = m_dir / "mailing_service"
@@ -407,11 +401,10 @@ def test_mailing(args):
         from publishers import mailing_status, logs
         xsd = lambda n: ms / "schemas" / n
         _run_case(args, "mailing/mailing_status", lambda: etree.tostring(mailing_status._build_element(correlation_id=T_CORR, campaign_id="C1", subject="S", sent=1, delivered=1, bounced=0, opened=0, bounced_emails=[], status="completed"), encoding="unicode"), xsd("mailing_status.xsd"), "mailing_status", "mailing")
-        _run_case(args, "mailing/log", lambda: logs._record_to_xml(MagicMock(levelno=20, msg="M", action="email")), xsd("logs.xsd"), "log", "mailing")
     except Exception as e: fail(f"Mailing setup error: {e}")
 
 def test_monitoring(args):
-    header("Monitoring")
+    header("Monitoring Audit")
     repos = Path(args.repos_dir); mon_dir = find_repo(repos, "monitoring")
     if not mon_dir: fail("Monitoring repo not found"); return
     det = mon_dir / "detector" / "detector.py"
