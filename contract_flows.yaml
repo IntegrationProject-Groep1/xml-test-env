@@ -249,6 +249,96 @@ flows:
     example: examples/cancel_registration_frontend.xml
     schema: schemas/cancel_registration.xsd
 
+  - id: frontend_user_deleted
+    label: "Frontend → CRM: user_deleted"
+    source: frontend
+    type: user_deleted
+    section: "§5.3"
+    critical: false
+    producer:
+      team: frontend
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: ~
+    schema: schemas/user_deleted.xsd
+
+  - id: frontend_company_member_removed
+    label: "Frontend → CRM: company_member_removed"
+    source: frontend
+    type: company_member_removed
+    section: "§5.8"
+    critical: false
+    producer:
+      team: frontend
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: ~
+    schema: ~
+
+  - id: frontend_company_registration
+    label: "Frontend → CRM: company_registration"
+    source: frontend
+    type: company_registration
+    section: "§5.9"
+    critical: false
+    producer:
+      team: frontend
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: ~
+    schema: ~
+
+  - id: frontend_company_update
+    label: "Frontend → CRM: company_update"
+    source: frontend
+    type: company_update
+    section: "§5.10"
+    critical: false
+    producer:
+      team: frontend
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: ~
+    schema: ~
+
+  - id: frontend_company_delete
+    label: "Frontend → CRM: company_delete"
+    source: frontend
+    type: company_delete
+    section: "§5.11"
+    critical: false
+    producer:
+      team: frontend
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: ~
+    schema: ~
+
   # ════════════════════════════════════════════════════════════════════════════
   # KASSA (Odoo)
   # ════════════════════════════════════════════════════════════════════════════
@@ -311,7 +401,7 @@ flows:
     schema: schemas/payment_registered.xsd
 
   - id: kassa_invoice_request
-    label: "Kassa → Facturatie: invoice_request"
+    label: "Kassa → CRM: invoice_request"
     source: kassa
     type: invoice_request
     section: "§6.5"
@@ -319,12 +409,12 @@ flows:
     producer:
       team: kassa
     consumers:
-      - team: facturatie
-        queue: facturatie.incoming
+      - team: crm
+        queue: crm.incoming
     routing:
       exchange: ""
       exchange_type: direct
-      routing_key: facturatie.incoming
+      routing_key: crm.incoming
     example: examples/invoice_request_kassa.xml
     schema: schemas/invoice_request.xsd
 
@@ -382,42 +472,6 @@ flows:
     example: examples/wallet_balance_update_26_4.xml
     schema: ~
 
-  - id: kassa_wallet_lease_request
-    label: "Kassa → CRM: wallet_lease_request"
-    source: kassa
-    type: wallet_lease_request
-    section: "§26.1"
-    critical: false
-    producer:
-      team: kassa
-    consumers:
-      - team: crm
-        queue: crm.incoming
-    routing:
-      exchange: kassa.exchange
-      exchange_type: topic
-      routing_key: kassa.to.crm.wallet_lease_request
-    example: examples/wallet_lease_request_26_1.xml
-    schema: ~
-
-  - id: kassa_wallet_lease_return
-    label: "Kassa → CRM: wallet_lease_return"
-    source: kassa
-    type: wallet_lease_return
-    section: "§26.3"
-    critical: false
-    producer:
-      team: kassa
-    consumers:
-      - team: crm
-        queue: crm.incoming
-    routing:
-      exchange: kassa.exchange
-      exchange_type: topic
-      routing_key: kassa.to.crm.wallet_lease_return
-    example: examples/wallet_lease_return_26_3.xml
-    schema: ~
-
   - id: kassa_payment_status
     label: "Kassa → Frontend: payment_status"
     source: kassa
@@ -471,6 +525,8 @@ flows:
     consumers:
       - team: frontend
         queue: planning.session.events
+      - team: crm
+        queue: planning.session.events
     routing:
       exchange: planning.exchange
       exchange_type: topic
@@ -488,6 +544,8 @@ flows:
       team: planning
     consumers:
       - team: frontend
+        queue: planning.session.events
+      - team: crm
         queue: planning.session.events
     routing:
       exchange: planning.exchange
@@ -649,20 +707,22 @@ flows:
     schema: schemas/invoice_request.xsd
 
   - id: crm_profile_update
-    label: "CRM → Facturatie: profile_update"
+    label: "CRM → Kassa + Facturatie: profile_update"
     source: crm
     type: profile_update
-    section: "§11.6"
+    section: "§10.2"
     critical: false
     producer:
       team: crm
     consumers:
+      - team: kassa
+        queue: kassa.incoming
       - team: facturatie
         queue: facturatie.incoming
     routing:
       exchange: ""
       exchange_type: direct
-      routing_key: facturatie.incoming
+      routing_key: kassa.incoming
     example: examples/profile_update_crm.xml
     schema: ~
 
