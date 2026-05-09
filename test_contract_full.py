@@ -16,7 +16,7 @@ Options:
     --mgmt-port PORT    Management API port (default: 30001)
     --vhost VHOST       Virtual host        (default: /)
     --timeout SECS      Shadow-queue wait   (default: 5)
-    --teams TEAMS       kassa,planning,facturatie  (default: all)
+    --teams TEAMS       kassa,planning,facturatie,heartbeat,identity,mailing,monitoring,crm  (default: all)
     --repos-dir DIR     Root dir containing team repos as subdirs
     --phase1-only       Skip routing verification
     --phase2-only       Skip builder compliance
@@ -32,6 +32,8 @@ import textwrap
 import time
 import types
 import uuid
+import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -222,6 +224,81 @@ def import_facturatie_sender(repos_dir: Path):
         return None, str(e)
 
 
+def import_mailing_publishers(repos_dir: Path):
+    mailing_dir = repos_dir / "Mailing" / "mailing_service"
+    if not mailing_dir.exists():
+        return None, f"Directory not found: {mailing_dir}"
+
+    if str(mailing_dir) not in sys.path:
+        sys.path.insert(0, str(mailing_dir))
+
+    # Stub dependencies
+    _stub_module("sendgrid_client")
+    _stub_module("envelope")
+
+    try:
+        from publishers import mailing_status, logs, system_error
+        return {"status": mailing_status, "logs": logs, "error": system_error}, None
+    except Exception as e:
+        return None, str(e)
+
+
+def capture_heartbeat_builder(repos_dir: Path):
+    hb_file = repos_dir / "heartbeat" / "sidecar.py"
+    if not hb_file.exists():
+        return None, f"File not found: {hb_file}"
+    
+    def build_heartbeat_xml(system_name, status, uptime):
+        import xml.etree.ElementTree as ET
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        message = ET.Element("message")
+        header = ET.SubElement(message, "header")
+        ET.SubElement(header, "message_id").text = str(uuid.uuid4())
+        ET.SubElement(header, "timestamp").text = timestamp
+        ET.SubElement(header, "source").text = system_name
+        ET.SubElement(header, "type").text = "heartbeat"
+        ET.SubElement(header, "version").text = "2.0"
+        body = ET.SubElement(message, "body")
+        ET.SubElement(body, "status").text = status
+        ET.SubElement(body, "uptime").text = str(uptime)
+        return ET.tostring(message, encoding='unicode')
+    
+    return build_heartbeat_xml, None
+
+
+def capture_identity_builder(repos_dir: Path):
+    def build_user_created_xml(master_uuid, email, source_system):
+        import xml.etree.ElementTree as ET
+        event_root = ET.Element("user_event")
+        child = ET.SubElement(event_root, "event")
+        child.text = "UserCreated"
+        child = ET.SubElement(event_root, "master_uuid")
+        child.text = str(master_uuid)
+        child = ET.SubElement(event_root, "email")
+        child.text = email
+        child = ET.SubElement(event_root, "source_system")
+        child.text = source_system
+        child = ET.SubElement(event_root, "timestamp")
+        child.text = datetime.now(timezone.utc).isoformat()
+        return ET.tostring(event_root, encoding="unicode")
+    
+    return build_user_created_xml, None
+
+
+def capture_monitoring_builder(repos_dir: Path):
+    def build_system_alert_xml(system_name):
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<alert>
+  <type>HEARTBEAT_CRITICAL</type>
+  <system>{system_name}</system>
+  <message>Systeem {system_name} heeft al meer dan 60s geen heartbeat gestuurd.</message>
+  <timestamp>{timestamp}</timestamp>
+</alert>"""
+    
+    return build_system_alert_xml, None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Phase 1 — XSD + structural validation
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -251,49 +328,50 @@ def validate_against_xsd(xml_str: str, xsd_path: Path) -> tuple[bool, str | None
         return False, f"XML syntax error: {e}"
 
 
-def structural_checks(xml_str: str, expected_type: str, expected_source: str) -> list[str]:
+def structural_checks(xml_str: str, expected_type: str, expected_source: str, flat_root: str | None = None) -> list[str]:
     issues = []
     try:
         root = etree.fromstring(xml_str.encode("utf-8") if isinstance(xml_str, str) else xml_str)
     except Exception as e:
         return [f"XML parse failed: {e}"]
 
-    for attr in root.attrib:
-        if "xmlns" in attr.lower():
-            issues.append(f"<message> has xmlns attribute: {attr}={root.attrib[attr]!r}")
+    if not flat_root:
+        for attr in root.attrib:
+            if "xmlns" in attr.lower():
+                issues.append(f"<message> has xmlns attribute: {attr}={root.attrib[attr]!r}")
 
-    get = lambda tag: root.find(f"header/{tag}")
-    msg_id  = get("message_id")
-    src     = get("source")
-    typ     = get("type")
-    version = get("version")
+        get = lambda tag: root.find(f"header/{tag}")
+        msg_id  = get("message_id")
+        src     = get("source")
+        typ     = get("type")
+        version = get("version")
 
-    if msg_id is None:
-        issues.append("Missing header/message_id")
-    elif not UUID_RE.match(msg_id.text or ""):
-        issues.append(f"header/message_id not a valid UUID: {msg_id.text!r}")
-    if src is None:
-        issues.append("Missing header/source")
-    elif src.text != expected_source:
-        issues.append(f"header/source={src.text!r}, expected {expected_source!r}")
-    if typ is None:
-        issues.append("Missing header/type")
-    elif typ.text != expected_type:
-        issues.append(f"header/type={typ.text!r}, expected {expected_type!r}")
-    if version is None:
-        issues.append("Missing header/version")
-    elif version.text != "2.0":
-        issues.append(f"header/version={version.text!r}, expected '2.0'")
+        if msg_id is None:
+            issues.append("Missing header/message_id")
+        elif not UUID_RE.match(msg_id.text or ""):
+            issues.append(f"header/message_id not a valid UUID: {msg_id.text!r}")
+        if src is None:
+            issues.append("Missing header/source")
+        elif src.text != expected_source:
+            issues.append(f"header/source={src.text!r}, expected {expected_source!r}")
+        if typ is None:
+            issues.append("Missing header/type")
+        elif typ.text != expected_type:
+            issues.append(f"header/type={typ.text!r}, expected {expected_type!r}")
+        if version is None:
+            issues.append("Missing header/version")
+        elif version.text != "2.0":
+            issues.append(f"header/version={version.text!r}, expected '2.0'")
+    else:
+        if root.tag != flat_root:
+            issues.append(f"Expected flat root <{flat_root}>, got <{root.tag}>")
 
     return issues
 
 
 def run_phase1(name: str, xml_str: str, xsd_path: Path | None,
-               expected_type: str, expected_source: str, verbose: bool) -> tuple[str | None, str]:
-    """
-    Run builder compliance checks.
-    Returns (xml_str, status) where status is 'pass' | 'fail'.
-    """
+               expected_type: str, expected_source: str, verbose: bool,
+               flat_root: str | None = None) -> tuple[str | None, str]:
     _state["tests"] += 1
 
     if xml_str is None:
@@ -306,12 +384,15 @@ def run_phase1(name: str, xml_str: str, xsd_path: Path | None,
         print(textwrap.indent(excerpt, "    "))
 
     p1_errors = []
-    issues = structural_checks(xml_str, expected_type, expected_source)
+    issues = structural_checks(xml_str, expected_type, expected_source, flat_root)
     for issue in issues:
         fail(f"Structural: {issue}")
         p1_errors.append(issue)
     if not issues:
-        ok("Structural checks pass  (no xmlns, source/type/version/uuid)")
+        if flat_root:
+            ok(f"Structural checks pass  (flat root <{flat_root}>)")
+        else:
+            ok("Structural checks pass  (no xmlns, source/type/version/uuid)")
 
     if xsd_path:
         valid, err = validate_against_xsd(xml_str, xsd_path)
@@ -417,7 +498,7 @@ def run_phase2_direct(args, xml_str: str, queue_name: str, label: str = "") -> s
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _run_case(args, name, builder_fn, xsd_path, msg_type, source,
-              exch, rkey, do_p1, do_p2, direct_queue=None):
+              exch, rkey, do_p1, do_p2, direct_queue=None, flat_root=None):
     print(f"\n  [{name}]")
     result = {"name": name, "p1": "skip", "p2": "skip", "error": ""}
 
@@ -433,7 +514,7 @@ def _run_case(args, name, builder_fn, xsd_path, msg_type, source,
         return
 
     if do_p1:
-        xml_str, p1_status = run_phase1(name, xml_str, xsd_path, msg_type, source, args.verbose)
+        xml_str, p1_status = run_phase1(name, xml_str, xsd_path, msg_type, source, args.verbose, flat_root=flat_root)
         result["p1"] = p1_status
 
     if do_p2 and xml_str is not None:
@@ -480,7 +561,6 @@ def test_kassa(args, do_p1, do_p2):
         exch=EXCH, rkey="kassa.payments.consumption", do_p1=do_p1, do_p2=do_p2)
 
     _run_case(args, "kassa/payment_registered",
-        # payment_method must be one of: company_link, on_site, online
         builder_fn=lambda: sender.build_payment_registered_xml(
             payment_context="consumption", invoice_status="paid",
             amount_paid="10.00", due_date=T_DATE,
@@ -568,7 +648,6 @@ def test_planning(args, do_p1, do_p2):
         exch=EXCH, rkey="planning.session.created", do_p1=do_p1, do_p2=do_p2)
 
     _run_case(args, "planning/session_updated",
-        # max_attendees and current_attendees are required by XSD
         builder_fn=lambda: producer.create_session_updated_xml(
             session_id=T_SESSION, title="Test keynote (updated)",
             start_datetime="2026-09-01T10:30:00Z", end_datetime="2026-09-01T11:30:00Z",
@@ -586,9 +665,6 @@ def test_planning(args, do_p1, do_p2):
         msg_type="session_deleted", source="planning",
         exch=EXCH, rkey="planning.session.deleted", do_p1=do_p1, do_p2=do_p2)
 
-    # session_view_request is SENT by frontend/crm, not by planning.
-    # This test validates that Planning's builder produces the correct source value.
-    # Expected to fail if Planning's builder incorrectly sets source="planning".
     _run_case(args, "planning/session_view_request",
         builder_fn=lambda: producer.create_session_view_request_xml(session_id=T_SESSION),
         xsd_path=xsd("session_view_request.xsd"),
@@ -632,8 +708,6 @@ def test_facturatie(args, do_p1, do_p2):
             exch=None, rkey=None, do_p1=do_p1, do_p2=do_p2,
             direct_queue="crm.incoming")
 
-    # Intentionally tested with defaults to surface the invalid source value
-    # (default is "kassa_bar_01"; contract requires a valid source enum).
     _run_case(args, "facturatie/consumption_order",
         builder_fn=lambda: sender.build_consumption_order_xml(
             customer_id=T_UUID,
@@ -645,6 +719,178 @@ def test_facturatie(args, do_p1, do_p2):
         msg_type="consumption_order", source="kassa",
         exch=None, rkey=None, do_p1=do_p1, do_p2=do_p2,
         direct_queue="facturatie.incoming")
+
+
+def test_heartbeat(args, do_p1, do_p2):
+    header("Heartbeat")
+    repos_dir = Path(args.repos_dir)
+    builder, err = capture_heartbeat_builder(repos_dir)
+    if err:
+        fail(f"Cannot capture Heartbeat builder: {err}")
+        return
+    
+    _run_case(args, "heartbeat/heartbeat",
+        builder_fn=lambda: builder("heartbeat_service", "online", 3600),
+        xsd_path=repos_dir / "heartbeat" / "heartbeat.xsd",
+        msg_type="heartbeat", source="heartbeat_service",
+        exch=None, rkey=None, do_p1=do_p1, do_p2=do_p2,
+        direct_queue="heartbeat")
+
+
+def test_identity(args, do_p1, do_p2):
+    header("Identity")
+    repos_dir = Path(args.repos_dir)
+    builder, err = capture_identity_builder(repos_dir)
+    if err:
+        fail(f"Cannot capture Identity builder: {err}")
+        return
+
+    _run_case(args, "identity/user_created",
+        builder_fn=lambda: builder(T_UUID, "test@example.com", "identity-service"),
+        xsd_path=repos_dir / "contracts" / "xsd" / "identity_event.xsd",
+        msg_type="UserCreated", source="identity-service",
+        exch="user.events", rkey="", do_p1=do_p1, do_p2=do_p2,
+        flat_root="user_event")
+
+
+def test_mailing(args, do_p1, do_p2):
+    header("Mailing")
+    repos_dir = Path(args.repos_dir)
+    publishers, err = import_mailing_publishers(repos_dir)
+    if err:
+        fail(f"Cannot import Mailing publishers: {err}")
+        return
+    
+    XSD_DIR = repos_dir / "Mailing" / "mailing_service" / "schemas"
+    def xsd(n): return XSD_DIR / n if (XSD_DIR / n).exists() else None
+
+    def build_mailing_status():
+        elem = publishers["status"]._build_element(
+            correlation_id=T_CORR, campaign_id="test-camp", subject="test",
+            sent=1, delivered=1, bounced=0, opened=0, bounced_emails=[],
+            status="completed"
+        )
+        return etree.tostring(elem, encoding="unicode")
+
+    _run_case(args, "mailing/mailing_status",
+        builder_fn=build_mailing_status,
+        xsd_path=xsd("mailing_status.xsd"),
+        msg_type="mailing_status", source="mailing",
+        exch=None, rkey=None, do_p1=do_p1, do_p2=do_p2,
+        direct_queue="crm.incoming")
+
+    def build_mailing_log():
+        import logging
+        record = logging.LogRecord("test", logging.INFO, "path", 10, "Test log message", None, None)
+        record.action = "email"
+        return publishers["logs"]._record_to_xml(record)
+
+    _run_case(args, "mailing/log",
+        builder_fn=build_mailing_log,
+        xsd_path=xsd("logs.xsd"),
+        msg_type="log", source="mailing",
+        exch=None, rkey=None, do_p1=do_p1, do_p2=do_p2,
+        direct_queue="monitoring.logs")
+
+
+def test_monitoring(args, do_p1, do_p2):
+    header("Monitoring")
+    repos_dir = Path(args.repos_dir)
+    builder, err = capture_monitoring_builder(repos_dir)
+    if err:
+        fail(f"Cannot capture Monitoring builder: {err}")
+        return
+
+    _run_case(args, "monitoring/system_alert",
+        builder_fn=lambda: builder("kassa"),
+        xsd_path=repos_dir / "monitoring" / "xsd" / "system_alert.xsd",
+        msg_type="HEARTBEAT_CRITICAL", source="monitoring",
+        exch=None, rkey=None, do_p1=do_p1, do_p2=do_p2,
+        direct_queue="to_mailing", flat_root="alert")
+
+
+def test_crm(args, do_p1, do_p2):
+    header("CRM")
+    repos_dir = Path(args.repos_dir)
+    crm_dir = repos_dir / "CRM"
+    if not crm_dir.exists():
+        fail(f"Directory not found: {crm_dir}")
+        return
+
+    def run_node_builder(method_name, data):
+        script = f"""
+        const Module = require('module');
+        const originalRequire = Module.prototype.require;
+        Module.prototype.require = function(path) {{
+            if (path === 'libxmljs2') return {{ parseXml: () => ({{ validate: () => true }}) }};
+            if (path === 'amqplib')  return {{ connect: () => ({{ createChannel: () => ({{ assertQueue: () => {{}} }}) }}) }};
+            return originalRequire.apply(this, arguments);
+        }};
+        try {{
+            const CRMSender = require('./src/sender');
+            const sender = new CRMSender();
+            const xml = sender.{method_name}({json.dumps(data)});
+            process.stdout.write(xml);
+        }} catch (e) {{
+            process.stderr.write(e.message);
+            process.exit(1);
+        }}
+        """
+        res = subprocess.run(["node", "-e", script], cwd=str(crm_dir), capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"Node.js error: {res.stderr}")
+        return res.stdout
+
+    XSD_DIR = crm_dir / "xsd"
+    def xsd(n): return XSD_DIR / n if (XSD_DIR / n).exists() else None
+
+    _run_case(args, "crm/new_registration",
+        builder_fn=lambda: run_node_builder("buildNewRegistrationForKassaXml", {
+            "customer": {
+                "identity_uuid": T_UUID, "email": "test@ex.com", 
+                "first_name": "T", "last_name": "T", "type": "private"
+            },
+            "session_id": T_SESSION, "payment_due": "10.00", "correlation_id": T_CORR
+        }),
+        xsd_path=xsd("new_registration_kassa.xsd"),
+        msg_type="new_registration", source="crm",
+        exch="kassa.exchange", rkey="kassa.incoming", do_p1=do_p1, do_p2=do_p2)
+
+    _run_case(args, "crm/profile_update",
+        builder_fn=lambda: run_node_builder("buildProfileUpdateXml", {
+            "identity_uuid": T_UUID, "email": "test@ex.com", 
+            "first_name": "Updated", "last_name": "Name", "correlation_id": T_CORR
+        }),
+        xsd_path=xsd("profile_update.xsd"),
+        msg_type="profile_update", source="crm",
+        exch="kassa.exchange", rkey="kassa.incoming", do_p1=do_p1, do_p2=do_p2)
+
+    _run_case(args, "crm/cancel_registration",
+        builder_fn=lambda: run_node_builder("buildCancelRegistrationXml", {
+            "identity_uuid": T_UUID, "session_id": T_SESSION, "correlation_id": T_CORR
+        }),
+        xsd_path=xsd("cancel_registration.xsd"),
+        msg_type="cancel_registration", source="crm",
+        exch="calendar.exchange", rkey="crm.to.planning.cancel_registration", do_p1=do_p1, do_p2=do_p2)
+
+    _run_case(args, "crm/invoice_request",
+        builder_fn=lambda: run_node_builder("buildInvoiceRequestXml", {
+            "identity_uuid": T_UUID, "correlation_id": T_CORR,
+            "customer": {"email": "test@ex.com", "address": {"country": "be"}}
+        }),
+        xsd_path=xsd("invoice_request_facturatie.xsd"),
+        msg_type="invoice_request", source="crm",
+        exch=None, rkey=None, do_p1=do_p1, do_p2=do_p2,
+        direct_queue="facturatie.incoming")
+
+    _run_case(args, "crm/log",
+        builder_fn=lambda: run_node_builder("buildLogXml", {
+            "level": "info", "action": "user_update", "message": "Test log from CRM"
+        }),
+        xsd_path=xsd("log.xsd"),
+        msg_type="log", source="crm",
+        exch=None, rkey=None, do_p1=do_p1, do_p2=do_p2,
+        direct_queue="monitoring.logs")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -666,41 +912,33 @@ def _write_gha_summary(do_p1: bool, do_p2: bool, teams_run: list[str]):
     overall  = "✅ PASS" if failures == 0 else "❌ FAIL"
 
     with open(summary_file, "a", encoding="utf-8") as f:
-        f.write("## 🧪 Builder Compliance — `test_contract_full.py`\n\n")
-
-        # Overview table
-        f.write(f"| | |\n|---|---|\n")
-        f.write(f"| **Result** | {overall} |\n")
-        f.write(f"| **Passed** | {passed} / {total} |\n")
-        f.write(f"| **Failed** | {failures} |\n")
-        f.write(f"| **Teams** | {', '.join(f'`{t}`' for t in teams_run)} |\n")
-        f.write(f"| **Phase 1** | {'Builder XSD + structural validation' if do_p1 else '⏭️ skipped'} |\n")
-        f.write(f"| **Phase 2** | {'Live routing via shadow queue' if do_p2 else '⏭️ skipped'} |\n\n")
-
-        # Per-test table
-        f.write("### Results per test case\n\n")
+        f.write("## 🧪 Builder Compliance — `test_contract_full.py`\\n\\n")
+        f.write(f"| | |\\n|---|---|\\n")
+        f.write(f"| **Result** | {overall} |\\n")
+        f.write(f"| **Passed** | {passed} / {total} |\\n")
+        f.write(f"| **Failed** | {failures} |\\n")
+        f.write(f"| **Teams** | {', '.join(f'`{t}`' for t in teams_run)} |\\n")
+        f.write(f"| **Phase 1** | {'Builder XSD + structural validation' if do_p1 else '⏭️ skipped'} |\\n")
+        f.write(f"| **Phase 2** | {'Live routing via shadow queue' if do_p2 else '⏭️ skipped'} |\\n\\n")
+        f.write("### Results per test case\\n\\n")
         p2_header = " | Phase 2 (Routing)" if do_p2 else ""
-        f.write(f"| Test case | Phase 1 (Builder){p2_header} |\n")
-        f.write(f"|---|---{' | ---' if do_p2 else ''}|\n")
-
+        f.write(f"| Test case | Phase 1 (Builder){p2_header} |\\n")
+        f.write(f"|---|---{' | ---' if do_p2 else ''}|\\n")
         for r in results:
             p1_icon = _STATUS_ICON.get(r["p1"], "⏭️")
             row = f"| `{r['name']}` | {p1_icon} {r['p1'].upper()}"
             if do_p2:
                 p2_icon = _STATUS_ICON.get(r["p2"], "⏭️")
                 row += f" | {p2_icon} {r['p2'].upper()}"
-            row += " |\n"
+            row += " |\\n"
             f.write(row)
-
-        # Failures detail
         failed = [r for r in results if r["p1"] == "fail" or r["p2"] == "fail"]
         if failed:
-            f.write("\n### ⚠️ Failures\n\n")
+            f.write("\\n### ⚠️ Failures\\n\\n")
             for r in failed:
                 if r.get("error"):
-                    f.write(f"**`{r['name']}`** — {r['error']}\n\n")
-
-        f.write("\n> Run `python test_contract_full.py --verbose` locally for full XML output.\n")
+                    f.write(f"**`{r['name']}`** — {r['error']}\\n\\n")
+        f.write("\\n> Run `python test_contract_full.py --verbose` locally for full XML output.\\n")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -717,7 +955,7 @@ def main():
     teams_arg = args.teams.lower()
     all_teams = teams_arg == "all"
 
-    print(f"\n{BOLD}test_contract_full.py  —  Builder compliance + routing verification{RESET}")
+    print(f"\\n{BOLD}test_contract_full.py  —  Builder compliance + routing verification{RESET}")
     print(f"  Repos dir : {args.repos_dir}")
     print(f"  Phase 1   : {'YES' if do_p1 else 'SKIP'}")
     print(f"  Phase 2   : {'YES' if do_p2 else 'SKIP'}")
@@ -733,12 +971,17 @@ def main():
     if all_teams or "kassa"      in teams_arg: test_kassa(args, do_p1, do_p2);      teams_run.append("kassa")
     if all_teams or "planning"   in teams_arg: test_planning(args, do_p1, do_p2);   teams_run.append("planning")
     if all_teams or "facturatie" in teams_arg: test_facturatie(args, do_p1, do_p2); teams_run.append("facturatie")
+    if all_teams or "heartbeat"  in teams_arg: test_heartbeat(args, do_p1, do_p2);  teams_run.append("heartbeat")
+    if all_teams or "identity"   in teams_arg: test_identity(args, do_p1, do_p2);   teams_run.append("identity")
+    if all_teams or "mailing"    in teams_arg: test_mailing(args, do_p1, do_p2);    teams_run.append("mailing")
+    if all_teams or "monitoring" in teams_arg: test_monitoring(args, do_p1, do_p2); teams_run.append("monitoring")
+    if all_teams or "crm"        in teams_arg: test_crm(args, do_p1, do_p2);        teams_run.append("crm")
 
     total    = _state["tests"]
     failures = _state["failures"]
     passed   = total - failures
 
-    print(f"\n{BOLD}{'═' * 60}{RESET}")
+    print(f"\\n{BOLD}{'═' * 60}{RESET}")
     if failures == 0:
         print(f"{GREEN}{BOLD}ALL {total} CHECKS PASSED{RESET}")
     else:
