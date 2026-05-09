@@ -194,23 +194,29 @@ def import_facturatie_sender(repos_dir: Path):
     if str(fact_dir) not in sys.path:
         sys.path.insert(0, str(fact_dir))
 
-    # Remove stale parent-package stubs that would block real filesystem imports.
-    # We only stub the specific leaf modules that open live connections.
-    for key in list(sys.modules.keys()):
-        if key in ("src", "src.services", "src.utils"):
+    import importlib as _il
+
+    # Remove any existing stubs for these specific packages to avoid conflicts
+    for key in ["src", "src.services", "src.utils"]:
+        if key in sys.modules:
             del sys.modules[key]
 
-    _stub_module("src.services.rabbitmq_utils",
-                 get_connection=lambda: (_ for _ in ()).throw(RuntimeError("stubbed")))
-    _stub_module("src.utils.xml_validator",
-                 validate_xml=lambda xml, schema_name=None: (True, None))
-
     try:
-        import importlib as _il
+        # Load the real package hierarchy from the Facturatie directory
+        _il.import_module("src")
+        _il.import_module("src.services")
+        
+        # Stub only the leaf modules that would trigger live connections
+        _stub_module("src.services.rabbitmq_utils", 
+                     get_connection=lambda: (_ for _ in ()).throw(RuntimeError("stubbed")))
+        _stub_module("src.utils.xml_validator", 
+                     validate_xml=lambda xml, schema_name=None: (True, None))
+
+        # Clear existing sender if any and import fresh
         if "src.services.rabbitmq_sender" in sys.modules:
-            sender = _il.reload(sys.modules["src.services.rabbitmq_sender"])
-        else:
-            from src.services import rabbitmq_sender as sender
+            del sys.modules["src.services.rabbitmq_sender"]
+            
+        sender = _il.import_module("src.services.rabbitmq_sender")
         return sender, None
     except Exception as e:
         return None, str(e)
@@ -562,11 +568,11 @@ def test_planning(args, do_p1, do_p2):
         exch=EXCH, rkey="planning.session.created", do_p1=do_p1, do_p2=do_p2)
 
     _run_case(args, "planning/session_updated",
-        # max_attendees is required by XSD
+        # max_attendees and current_attendees are required by XSD
         builder_fn=lambda: producer.create_session_updated_xml(
             session_id=T_SESSION, title="Test keynote (updated)",
             start_datetime="2026-09-01T10:30:00Z", end_datetime="2026-09-01T11:30:00Z",
-            location="Aula B", max_attendees=200,
+            location="Aula B", max_attendees=200, current_attendees=0,
         ),
         xsd_path=xsd("session_updated.xsd"),
         msg_type="session_updated", source="planning",
