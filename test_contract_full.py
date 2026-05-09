@@ -992,16 +992,24 @@ def test_shared(args):
     mon_dir = find_repo(repos, "monitoring")
     if mon_dir and team_applies(args, "monitoring"):
         det = mon_dir / "detector"; sys.path.insert(0, str(det))
-        _stub_module("elasticsearch", Elasticsearch=MagicMock()); _stub_module("logging").getLogger = MagicMock()
+        from datetime import timezone as tz
+        _stub_module("elasticsearch", Elasticsearch=MagicMock())
+        _stub_module("logging", getLogger=lambda n: MagicMock())
+        # Provide globals that detector.py might expect at module level
+        import datetime
         mon_env = {
             "RABBITMQMONITORING_USER": "guest",
             "RABBITMQMONITORING_PASS": "guest",
             "RABBITMQ_HOST": args.host,
         }
         with patch.dict(os.environ, mon_env, clear=False):
-            if "detector" in sys.modules: del sys.modules["detector"]
-            import detector
-            _run_case(args, "monitoring/system_alert", lambda: detector.send_alert_xml("kassa") or "", mon_dir / "xsd" / "system_alert.xsd", "HEARTBEAT_CRITICAL", "monitoring", flat_root="alert")
+            with patch("datetime.timezone", tz):
+                if "detector" in sys.modules: del sys.modules["detector"]
+                try:
+                    import detector
+                    _run_case(args, "monitoring/system_alert", lambda: detector.send_alert_xml("kassa") or "", mon_dir / "xsd" / "system_alert.xsd", "HEARTBEAT_CRITICAL", "monitoring", flat_root="alert")
+                except Exception as e:
+                    fail(f"monitoring/system_alert: Module import failed: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DYNAMIC E2E RUNNER
