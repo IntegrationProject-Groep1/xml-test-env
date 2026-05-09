@@ -1930,15 +1930,9 @@ def flow_frontend_planning_calendar_invite(cfg):
 def flow_monitoring_mailing_system_alert(cfg):
     header("Flow 15 · Monitoring → Mailing  [system_alert]  →  to_mailing")
     xml = build_alert("crm", "Heartbeat timeout: crm has not responded and is considered offline")
-    if cfg.verbose:
-        print(f"\n{CYAN}--- XML ---{RESET}\n{xml}\n")
-    valid = validate(xml, "monitoring_system_alert", "Monitoring→Mailing system_alert")
-    if not valid:
-        warn("Skipping publish — alert XML failed schema validation")
-        return
-    if publish(cfg, "", "to_mailing", xml):
-        peek_queue(cfg, "to_mailing", "HEARTBEAT_CRITICAL",
-                   "Monitoring→Mailing system_alert")
+    run_flow(cfg, "monitoring_system_alert",
+             "Monitoring→Mailing system_alert",
+             xml, "", "to_mailing", "to_mailing")
 
 
 # ── Flow 16 : All Teams → Monitoring  heartbeat (§3) ─────────────────────────

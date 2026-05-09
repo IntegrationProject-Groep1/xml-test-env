@@ -374,21 +374,26 @@ def get_frontend_runner(f_dir):
                 json_path = jf.name
             json_lit = json.dumps(json_path.replace("\\", "/"))
             php_src = f"""<?php
-$vendor = '{f_dir_p.as_posix()}/vendor/autoload.php';
+$f_dir = '{f_dir_p.as_posix()}';
+$vendor = "$f_dir/vendor/autoload.php";
 if (file_exists($vendor)) {{ require_once $vendor; }}
+// Custom PSR-4 autoloader for Drupal modules
+spl_autoload_register(function ($class) use ($f_dir) {{
+    if (strpos($class, 'Drupal\\\\rabbitmq_sender\\\\') === 0) {{
+        $rel = str_replace('Drupal\\\\rabbitmq_sender\\\\', 'web/modules/custom/rabbitmq_sender/src/', $class);
+        $path = $f_dir . '/' . str_replace('\\\\', '/', $rel) . '.php';
+        if (file_exists($path)) {{ require_once $path; }}
+    }}
+}});
 class MockLogger {{ public function info($m, $c) {{}} }}
 class MockDrupal {{ public static function logger($n) {{ return new MockLogger(); }} }}
 if (!class_exists('Drupal')) {{ class_alias('MockDrupal', 'Drupal'); }}
 if (!class_exists('Drupal\\rabbitmq_sender\\{method}')) {{
-    fwrite(STDERR, "ERROR: Class Drupal\\rabbitmq_sender\\{method} not found. Ensure vendor/ is present or classes are defined.");
+    fwrite(STDERR, "ERROR: Class Drupal\\rabbitmq_sender\\{method} not found.");
     exit(1);
 }}
 $_raw = file_get_contents({json_lit});
 $data = json_decode($_raw, true);
-if ($data === null && json_last_error() !== JSON_ERROR_NONE) {{
-    fwrite(STDERR, 'ERROR: json_decode: ' . json_last_error_msg());
-    exit(2);
-}}
 $sender = new \\Drupal\\rabbitmq_sender\\{method}();
 echo $sender->buildXml($data);
 """
@@ -428,23 +433,46 @@ def get_crm_runner(c_dir):
                     upsert: async (data) => ({{ success: true, id: 'SF-TEST-ID' }}),
                     create: async () => ({{ success: true, id: 'SF-TEST-ID' }}),
                     update: async () => ({{ success: true, id: 'SF-TEST-ID' }}),
-                    find: () => ({{ limit: () => ({{ execute: async () => [] }}) }})
+                    find: (q, fields) => {{
+                        const query = {{
+                            limit: (n) => {{
+                                const thenable = Promise.resolve([{{ Id: 'SF-TEST-ID', Master_UUID__c: 'SF-TEST-UUID' }}]);
+                                thenable.execute = async () => [{{ Id: 'SF-TEST-ID' }}];
+                                return thenable;
+                            }},
+                            then: (resolve) => Promise.resolve([{{ Id: 'SF-TEST-ID' }}]).then(resolve)
+                        }};
+                        return query;
+                    }}
                 }}) }}; return await fn(conn);
             }}
         }};
         const mockMQ = {{
             assertQueue: async () => ({{ queue: 'mock-queue' }}), 
             assertExchange: async () => {{}}, bindQueue: async () => {{}},
-            consume: async () => ({{ consumerTag: 'tag' }}), sendToQueue: () => true, publish: () => true, ack: () => {{}}, nack: () => {{}}
+            consume: async () => ({{ consumerTag: 'tag' }}), 
+            sendToQueue: (q, b) => true, publish: (e, r, b) => true, 
+            ack: () => {{}}, nack: () => {{}}
         }};
         Module.prototype.require = function(p) {{
-            if (p === 'libxmljs2') return {{ parseXml: () => ({{ validate: () => true }}) }};
-            if (p === 'amqplib') return {{ connect: async () => ({{ createChannel: async () => mockMQ }}) }};
+            if (p === 'libxmljs2') return {{ 
+                parseXml: () => ({{ validate: () => true }}),
+                memoryUsage: () => 0
+            }};
+            if (p === 'amqplib') return {{ connect: async () => ({{ 
+                createChannel: async () => mockMQ,
+                on: () => {{}}
+            }}) }};
             if (p.includes('sfConnection')) return function() {{ return mockSF; }};
             if (p.includes('sender')) return function() {{ 
-                function Mock() {{}}
-                Mock.prototype.init = async () => {{}}; Mock.prototype.sendLog = async () => {{}};
-                const realClass = orig.apply(this, arguments); if (typeof realClass === 'function') Object.assign(Mock.prototype, realClass.prototype);
+                const Real = orig.apply(this, arguments);
+                function Mock() {{
+                    Real.apply(this, arguments);
+                    this.init = async () => {{}};
+                    this.sendLog = async () => ({{ success: true }});
+                    this.channel = mockMQ;
+                }}
+                Mock.prototype = Object.create(Real.prototype);
                 return Mock;
             }};
             return orig.apply(this, arguments);
@@ -455,18 +483,26 @@ def get_crm_runner(c_dir):
                     const S = require('./src/sender'); const s = new S();
                     await s.init().catch(() => {{}});
                     const result = await s.{m}({json.dumps(d)});
-                    process.stdout.write(String(result.payload || result));
+                    const output = result && typeof result === 'object' ? (result.payload || JSON.stringify(result)) : String(result);
+                    process.stdout.write(output);
                 }} else {{
                     const R = require('./src/receiver'); const r = new R();
-                    r.channel = mockMQ; r.sf = mockSF; r.sender = {{ init: async()=>{{}}, sendLog: async()=>{{}}, sendNewRegistrationToKassa: async()=>({{}}), sendConsumptionOrderToFacturatie: async()=>({{}}) }};
-                    const msg = {{ content: Buffer.from({json.dumps(d)}), fields: {{ deliveryTag: 1 }}, properties: {{ contentType: 'application/xml' }} }};
-                    let logs = []; console.log = (...a) => logs.push(a.join(' ')); console.error = (...a) => logs.push(a.join(' '));
+                    r.channel = mockMQ; r.sf = mockSF; 
+                    r.sender.channel = mockMQ; r.sender.init = async () => {{}};
+                    const content = typeof {json.dumps(d)} === 'string' ? {json.dumps(d)} : JSON.stringify({json.dumps(d)});
+                    const msg = {{ content: Buffer.from(content), fields: {{ deliveryTag: 1 }}, properties: {{ contentType: 'application/xml' }} }};
+                    let logs = []; 
+                    const oldLog = console.log; console.log = (...a) => {{ oldLog(...a); logs.push(a.join(' ')); }};
+                    const oldErr = console.error; console.error = (...a) => {{ oldErr(...a); logs.push(a.join(' ')); }};
                     await r.handleMessage(msg);
                     const err = logs.find(l => (l.includes('Error') || l.includes('INVALID_FIELD')) && !l.includes('WARNING') && !l.includes('RabbitMQ'));
                     if (err) {{ process.stderr.write(err); process.exit(1); }}
                     process.stdout.write("SUCCESS");
                 }}
-            }} catch (e) {{ process.stderr.write(e.message); process.exit(1); }}
+            }} catch (e) {{ 
+                process.stderr.write(e.stack || e.message); 
+                process.exit(1); 
+            }}
         }}
         run();
         """
@@ -1077,58 +1113,75 @@ class DynamicFlowRunner:
         self.xsd_map = {}    # flow_id -> Path
 
     def setup(self, args):
-        """Initialize all team runners and register their builders/handlers."""
+        """Initialize all team runners and register their builders/handlers based on Contract v2.3."""
         repos = self.repos_dir
         
-        # FRONTEND
+        # 1. FRONTEND (PHP/Drupal) - Section 5
         f_dir = find_repo(repos, "IP-groep1-frontend")
         if f_dir:
             run_fe = get_frontend_runner(f_dir)
             self.runners["frontend"] = run_fe
-            self.producers[("frontend", "new_registration")] = lambda: run_fe("NewRegistrationSender", {
-                "identity_uuid": T_UUID, "email": "t@e.com", "first_name": "J", "last_name": "J",
-                "date_of_birth": "1990-01-01", "address": "S 1, 1000 B", "session_id": T_SESSION
-            })
-            self.producers[("frontend", "session_create_request")] = lambda: run_fe("SessionCreateRequestSender", {
-                "session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW,
-                "location": "L", "max_attendees": 100
-            })
-            self.producers[("frontend", "calendar_invite")] = lambda: run_fe("CalendarInviteSender", {
-                "session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW,
-                "location": "L", "identity_uuid": T_UUID, "attendee_email": "t@e.com"
-            })
-            # Add more frontend producers as needed
+            
+            # Builders for all Frontend flows
+            fe_reg_data = {"identity_uuid": T_UUID, "email": "t@e.com", "first_name": "J", "last_name": "J", "date_of_birth": "1990-01-01", "address": "S 1, 1000 B", "session_id": T_SESSION}
+            self.producers[("frontend", "new_registration")] = lambda: run_fe("NewRegistrationSender", fe_reg_data)
+            self.producers[("frontend", "user_created")] = lambda: run_fe("UserCreatedSender", {"identity_uuid": T_UUID, "email": "t@e.com"})
+            self.producers[("frontend", "user_registered")] = lambda: run_fe("UserRegisteredSender", {"identity_uuid": T_UUID, "type": "private"})
+            self.producers[("frontend", "user_updated")] = lambda: run_fe("UserUpdatedSender", {"identity_uuid": T_UUID, "email": "new@e.com"})
+            self.producers[("frontend", "user_checkin")] = lambda: run_fe("UserCheckinSender", {"identity_uuid": T_UUID, "session_id": T_SESSION})
+            self.producers[("frontend", "event_ended")] = lambda: run_fe("EventEndedSender", {"event_id": "EV-001", "end_time": T_NOW})
+            self.producers[("frontend", "calendar_invite")] = lambda: run_fe("CalendarInviteSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "identity_uuid": T_UUID, "attendee_email": "t@e.com"})
+            self.producers[("frontend", "session_create_request")] = lambda: run_fe("SessionCreateRequestSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "max_attendees": 100})
+            self.producers[("frontend", "session_update_request")] = lambda: run_fe("SessionUpdateRequestSender", {"session_id": T_SESSION, "title": "U"})
+            self.producers[("frontend", "session_delete_request")] = lambda: run_fe("SessionDeleteRequestSender", {"session_id": T_SESSION})
+            self.producers[("frontend", "cancel_registration")] = lambda: run_fe("CancelRegistrationSender", {"identity_uuid": T_UUID, "session_id": T_SESSION})
+            self.producers[("frontend", "user_deleted")] = lambda: run_fe("UserUnregisteredSender", {"identity_uuid": T_UUID}) # Note: Unregistered -> user_deleted mapping
+            self.producers[("frontend", "company_member_removed")] = lambda: run_fe("CompanyMemberRemovedSender", {"company_id": "C1", "identity_uuid": T_UUID})
+            self.producers[("frontend", "company_registration")] = lambda: run_fe("CompanyRegistrationSender", {"company_name": "C", "vat_number": "BE0123"})
+            self.producers[("frontend", "company_update")] = lambda: run_fe("CompanyUpdateSender", {"company_id": "C1", "company_name": "C2"})
+            self.producers[("frontend", "company_delete")] = lambda: run_fe("CompanyDeleteSender", {"company_id": "C1"})
+
+            # Receivers
+            self.receivers["frontend"] = lambda b: (True, "") # Frontend mostly just sends, but handles some status updates
+
+            # XSDs
             self.xsd_map["frontend_new_registration"] = f_dir / "xsd" / "new_registration.xsd"
             self.xsd_map["frontend_session_create_request"] = f_dir / "xsd" / "session_create_request.xsd"
+            self.xsd_map["frontend_session_update_request"] = f_dir / "xsd" / "session_update_request.xsd"
+            self.xsd_map["frontend_session_delete_request"] = f_dir / "xsd" / "session_delete_request.xsd"
+            self.xsd_map["frontend_cancel_registration"] = f_dir / "xsd" / "cancel_registration.xsd"
+            self.xsd_map["frontend_user_deleted"] = f_dir / "xsd" / "user_deleted.xsd"
 
-        # CRM
+        # 2. CRM (Node.js) - Section 10-12
         c_dir = find_repo(repos, "CRM")
         if c_dir:
             run_crm = get_crm_runner(c_dir)
             self.runners["crm"] = run_crm
-            self.receivers["crm"] = lambda b: run_crm("process", "handleMessage", b.decode("utf-8"))
-            reg_data = {
-                "customer": {"identity_uuid": T_UUID, "email": "lena.declercq@test.be", "first_name": "Lena", "last_name": "Declercq", "type": "private"},
-                "session_id": T_SESSION, "payment_due": {"amount": "10.00", "status": "unpaid"}, "correlation_id": T_CORR
-            }
-            self.producers[("crm", "new_registration")] = lambda: run_crm("build", "sendNewRegistrationToKassa", reg_data)[1]
-            self.xsd_map["crm_new_registration"] = c_dir / "xsd" / "new_registration_kassa.xsd"
+            self.receivers["crm"] = lambda b: run_crm("process", "handleMessage", b.decode("utf-8") if isinstance(b, bytes) else b)
+            
+            crm_reg_data = {"customer": {"identity_uuid": T_UUID, "email": "lena@test.be", "first_name": "Lena", "last_name": "Declercq", "type": "private"}, "session_id": T_SESSION, "payment_due": {"amount": "10.00", "status": "unpaid"}, "correlation_id": T_CORR}
+            self.producers[("crm", "new_registration")] = lambda: run_crm("build", "sendNewRegistrationToKassa", crm_reg_data)[1]
+            self.producers[("crm", "profile_update")] = lambda: run_crm("build", "sendProfileUpdateToKassa", {"identity_uuid": T_UUID, "email": "new@test.be"})[1]
+            self.producers[("crm", "invoice_request")] = lambda: run_crm("build", "sendInvoiceRequest", {"identity_uuid": T_UUID, "invoice_data": {"amount": "75.00"}})[1]
+            self.producers[("crm", "send_mailing")] = lambda: run_crm("build", "sendMailingSend", {"identity_uuid": T_UUID, "mail_type": "welcome"})[1]
+            self.producers[("crm", "cancel_registration")] = lambda: run_crm("build", "sendCancelRegistrationToPlanning", {"identity_uuid": T_UUID, "session_id": T_SESSION})[1]
+            self.producers[("crm", "wallet_lease_grant")] = lambda: run_crm("build", "sendWalletLeaseGrant", {"identity_uuid": T_UUID, "lease_id": "L1", "amount": "50.00"})[1]
+            self.producers[("crm", "wallet_remote_topup")] = lambda: run_crm("build", "sendWalletRemoteTopup", {"identity_uuid": T_UUID, "amount": "20.00"})[1]
+            self.producers[("crm", "wallet_balance_update")] = lambda: run_crm("build", "sendWalletBalanceUpdate", {"identity_uuid": T_UUID, "balance": "15.00"})[1]
 
-        # KASSA
+            self.xsd_map["crm_new_registration"] = c_dir / "xsd" / "new_registration_kassa.xsd"
+            self.xsd_map["crm_send_mailing"] = c_dir / "xsd" / "send_mailing.xsd"
+            self.xsd_map["crm_invoice_request"] = c_dir / "xsd" / "invoice_request.xsd"
+
+        # 3. KASSA (Odoo) - Section 6
         k_dir = find_repo(repos, "Kassa")
         if k_dir:
             ki = k_dir / "integratie"
             sys.path.insert(0, str(ki))
-            # Mocks are already set up in test_kassa, but we need them here too if run independently
+            # Stub dependencies for direct Python execution
             _stub_module("defusedxml.ElementTree", fromstring=etree.fromstring)
             _stub_module("defusedxml.xmlrpc", monkey_patch=MagicMock())
-            mock_env = {
-                "RABBIT_HOST": args.host,
-                "RABBIT_PORT": str(args.port),
-                "RABBIT_USER": args.user,
-                "RABBIT_PASS": args.password,
-                "ODOO_URL":"u","ODOO_DB":"d","ODOO_USER":"u","ODOO_PASS":"p"
-            }
+            mock_env = {"RABBIT_HOST": args.host, "RABBIT_PORT": str(args.port), "RABBIT_USER": args.user, "RABBIT_PASS": args.password, "ODOO_URL":"u","ODOO_DB":"d","ODOO_USER":"u","ODOO_PASS":"p"}
             with patch.dict(os.environ, mock_env):
                 try:
                     if "sender" in sys.modules: del sys.modules["sender"]
@@ -1140,26 +1193,22 @@ class DynamicFlowRunner:
                         "42", T_UUID, "private", "t@e.com", {"street":"S","number":"1","postal_code":"1","city":"B","country":"be"}
                     )
                     self.producers[("kassa", "payment_registered")] = lambda: s_k.build_payment_registered_xml("consumption", "paid", "10.0", T_DATE, "T1", "on_site", "I1", T_UUID, T_CORR)
+                    self.producers[("kassa", "badge_assigned")] = lambda: s_k.build_badge_assigned_xml(T_UUID, T_BADGE, "main_bar")
+                    self.producers[("kassa", "refund_processed")] = lambda: s_k.build_refund_processed_xml("T1", "10.0", "eur", T_NOW)
+                    self.producers[("kassa", "wallet_balance_update")] = lambda: s_k.build_wallet_balance_update_xml(T_UUID, "12.50", "crm", "active")
+                    self.producers[("kassa", "payment_status")] = lambda: s_k.build_payment_status_xml("T1", "success", "Payment accepted")
+                    self.producers[("kassa", "invoice_request")] = lambda: s_k.build_invoice_request_xml(T_UUID, "42", "I1", "10.0")
+
                     self.xsd_map["kassa_consumption_order"] = ki / "schemas" / "schema_consumption_order_v2.3.xsd"
                     self.xsd_map["kassa_payment_registered_consumption"] = ki / "schemas" / "schema_payment_registered_v2.1.xsd"
                     self.xsd_map["kassa_payment_registered_registration"] = ki / "schemas" / "schema_payment_registered_v2.1.xsd"
+                    self.xsd_map["kassa_badge_assigned"] = ki / "schemas" / "schema_badge_assigned_v2.1.xsd"
+                    self.xsd_map["kassa_refund_processed"] = ki / "schemas" / "schema_refund_processed_v2.1.xsd"
+                    self.xsd_map["kassa_invoice_request"] = ki / "schemas" / "schema_invoice_request_v2.1.xsd"
                 except Exception as e:
                     warn(f"Kassa dynamic setup failed: {e}")
 
-        # FACTURATIE
-        f_fact = find_repo(repos, "Facturatie")
-        if f_fact:
-            try:
-                self.receivers["facturatie"] = _make_facturatie_process_fn(f_fact)
-                import src.services.rabbitmq_sender as s_f
-                self.producers[("facturatie", "send_mailing")] = lambda: s_f.build_invoice_created_notification_xml("I1","t@e.com",T_CORR,"J","J","C1",T_UUID)
-                self.producers[("facturatie", "payment_registered")] = lambda: s_f.build_payment_confirmed_xml("I1", T_UUID, "75.00", "eur", "online", paid_at=T_NOW, source="facturatie", status="paid", due_date=T_DATE)
-                self.xsd_map["facturatie_send_mailing"] = f_fact / "src" / "services" / "xsd" / "send_mailing.xsd"
-                self.xsd_map["facturatie_payment_registered"] = f_fact / "src" / "services" / "xsd" / "payment_registered.xsd"
-            except Exception as e:
-                warn(f"Facturatie dynamic setup failed: {e}")
-
-        # PLANNING
+        # 4. PLANNING (Python) - Section 7 / 19 / 21
         p_dir = find_repo(repos, "Planning")
         if p_dir:
             sys.path.insert(0, str(p_dir))
@@ -1172,23 +1221,43 @@ class DynamicFlowRunner:
                 _stub_module("azure.identity", DefaultAzureCredential=MagicMock())
                 import producer as prod_p
                 import consumer as cons_p
-                from xml_handlers import parse_session_updated
                 self.producers[("planning", "session_created")] = lambda: prod_p.create_session_xml(T_SESSION, "T", T_NOW, T_NOW, "A", 100, 0)
                 self.producers[("planning", "session_updated")] = lambda: prod_p.create_session_updated_xml(T_SESSION, "U", T_NOW, T_NOW, "B", max_attendees=200, current_attendees=10)
+                self.producers[("planning", "session_deleted")] = lambda: prod_p.create_session_deleted_xml(T_SESSION)
+                self.producers[("planning", "session_occupancy_update")] = lambda: prod_p.create_session_occupancy_xml(T_SESSION, 150)
+                self.producers[("planning", "calendar_invite_confirmed")] = lambda: prod_p.create_calendar_invite_confirmed_xml(T_SESSION, T_UUID, "confirmed")
+
                 self.receivers["planning"] = lambda b: (patch("pika.BlockingConnection")(lambda _: (cons_p.on_message(MagicMock(), MagicMock(routing_key="test"), MagicMock(), b), MagicMock()))()[0], "Nacked")
-                self.xsd_map["planning_session_created"] = p_dir / "xsd" / "session_created.xsd"
+                
                 self.xsd_map["planning_session_updated"] = p_dir / "xsd" / "session_updated.xsd"
+                self.xsd_map["planning_session_deleted"] = p_dir / "xsd" / "session_deleted.xsd"
+                self.xsd_map["planning_session_occupancy_update"] = p_dir / "xsd" / "session_occupancy_update.xsd"
             except Exception as e:
                 warn(f"Planning dynamic setup failed: {e}")
 
-        # IDENTITY
+        # 5. FACTURATIE (Python) - Section 8 / 11 / 13
+        f_fact = find_repo(repos, "Facturatie")
+        if f_fact:
+            try:
+                self.receivers["facturatie"] = _make_facturatie_process_fn(f_fact)
+                import src.services.rabbitmq_sender as s_f
+                self.producers[("facturatie", "invoice_status")] = lambda: s_f.build_invoice_created_notification_xml("I1","t@e.com",T_CORR,"J","J","C1",T_UUID)
+                self.producers[("facturatie", "payment_registered")] = lambda: s_f.build_payment_confirmed_xml("I1", T_UUID, "75.00", "eur", "online", paid_at=T_NOW, source="facturatie", status="paid", due_date=T_DATE)
+                self.producers[("facturatie", "send_mailing")] = lambda: s_f.build_invoice_created_notification_xml("I1","t@e.com",T_CORR,"J","J","C1",T_UUID) # Same helper often
+                
+                self.xsd_map["facturatie_send_mailing"] = f_fact / "src" / "services" / "xsd" / "send_mailing.xsd"
+                self.xsd_map["facturatie_payment_registered"] = f_fact / "src" / "services" / "xsd" / "payment_registered.xsd"
+            except Exception as e:
+                warn(f"Facturatie dynamic setup failed: {e}")
+
+        # 6. IDENTITY (Python) - Section 15 (Exception to Envelope Rule)
         i_dir = find_repo(repos, "identity-service")
         if i_dir:
             sys.path.insert(0, str(i_dir))
             try:
                 _stub_module("sqlalchemy", Column=MagicMock(), String=MagicMock(), Boolean=MagicMock(), DateTime=MagicMock(), create_engine=MagicMock(), Integer=MagicMock(), ForeignKey=MagicMock())
                 _stub_module("sqlalchemy.ext.declarative", declarative_base=lambda: MagicMock())
-                _stub_module("sqlalchemy.orm", sessionmaker=MagicMock(), Session=MagicMock(), declarative_base=lambda: MagicMock(), relationship=MagicMock())
+                _stub_module("sqlalchemy.orm", sessionmaker=MagicMock(), Session=MagicMock(), relationship=MagicMock())
                 _stub_module("fastapi", FastAPI=MagicMock(), Depends=MagicMock(), HTTPException=MagicMock())
                 _stub_module("uvicorn")
                 import rabbitmq_service as i_svc
@@ -1203,26 +1272,36 @@ class DynamicFlowRunner:
             except Exception as e:
                 warn(f"Identity dynamic setup failed: {e}")
 
-        # MAILING
+        # 7. MAILING (Python) - Section 9 / 12 / 13
         m_dir = find_repo(repos, "Mailing")
         if m_dir:
             ms = m_dir / "mailing_service"
             sys.path.insert(0, str(ms))
             try:
                 _stub_module("python_http_client", client=MagicMock())
-                _stub_module("sendgrid_client", SendGridAPIClient=MagicMock(), Recipient=MagicMock(), Attachment=MagicMock(), SendGridError=Exception)
+                _stub_module("sendgrid_client", 
+                    SendGridAPIClient=MagicMock(), 
+                    Recipient=MagicMock(), 
+                    Attachment=MagicMock(), 
+                    SendGridError=Exception,
+                    send_template_email=MagicMock(return_value=MagicMock(rejected=[])),
+                    SendResult=type("SendResult", (), {"__init__": lambda self, accepted=[], rejected=[]: None, "accepted": [], "rejected": []})
+                )
                 from publishers import mailing_status as pub_m
                 from consumers import send_mailing as cons_m
                 import envelope as env_m
                 self.producers[("mailing", "mailing_status")] = lambda: etree.tostring(pub_m._build_element(correlation_id=T_CORR, campaign_id="C1", subject="S", sent=1, delivered=1, bounced=0, opened=0, bounced_emails=[], status="completed"), encoding="unicode")
                 def m_rec_dyn(b):
-                    send_xsd = etree.XMLSchema(etree.parse(ms / "schemas" / "send_mailing.xsd"))
+                    send_xsd_path = ms / "schemas" / "send_mailing.xsd"
+                    if not send_xsd_path.exists(): return False, f"XSD missing: {send_xsd_path}"
+                    send_xsd = etree.XMLSchema(etree.parse(send_xsd_path))
                     with patch.dict(os.environ, {"FROM_EMAIL": "audit@test.local"}, clear=False):
                         with patch("sendgrid_client.send_template_email", return_value=MagicMock(rejected=[])):
                             with patch("templates.resolve_template_id", return_value="d-test-template"):
                                 cons_m.handle(env_m.parse_and_validate(b, send_xsd), MagicMock())
                     return True, ""
                 self.receivers["mailing"] = m_rec_dyn
+                self.xsd_map["mailing_mailing_status"] = ms / "schemas" / "mailing_status.xsd"
             except Exception as e:
                 warn(f"Mailing dynamic setup failed: {e}")
 
