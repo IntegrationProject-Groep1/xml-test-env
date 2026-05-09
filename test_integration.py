@@ -32,8 +32,13 @@ import uuid
 import json
 import textwrap
 from datetime import datetime, timezone
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
+
+_CI_DIR = str(Path(__file__).resolve().parent)
+if _CI_DIR not in sys.path:
+    sys.path.insert(0, _CI_DIR)
+from ci_summary import TeeStream, markdown_full_log
 
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
@@ -2270,12 +2275,7 @@ def should_test(cfg, *teams: str) -> bool:
     return bool(active.intersection(teams))
 
 
-def main():
-    load_env()
-    cfg = parse_args()
-    if cfg.env != ".env":
-        load_env(cfg.env)
-
+def _run_integration(cfg) -> int:
     print()
     print(f"{BOLD}╔══════════════════════════════════════════════════════════════╗{RESET}")
     print(f"{BOLD}║  RabbitMQ Integration Test Suite — Groep 1 — 2026            ║{RESET}")
@@ -2347,19 +2347,40 @@ def main():
         print(f"  Failures  : {RED}{BOLD}{_state['failures']}{RESET}")
     print()
 
-    sum_file = os.getenv("GITHUB_STEP_SUMMARY")
-    if sum_file:
-        with open(sum_file, "a", encoding="utf-8") as f:
-            f.write(f"## 🌐 VM Routing — `test_integration.py`\n\n")
-            f.write(f"**Target:** `{cfg.host}:{cfg.port}`\n\n")
-            f.write(f"**Tests Run:** {_state['tests']}\n")
-            if _state["failures"] == 0:
-                f.write(f"**Result:** ✅ ALL PASSED\n\n")
-            else:
-                f.write(f"**Result:** ❌ {_state['failures']} FAILED\n\n")
-            f.write(f"*(See the Action logs above for detailed flow-by-flow verification)*\n\n")
+    return 0 if _state["failures"] == 0 else 1
 
-    sys.exit(0 if _state["failures"] == 0 else 1)
+
+def main():
+    load_env()
+    cfg = parse_args()
+    if cfg.env != ".env":
+        load_env(cfg.env)
+
+    sum_file = os.getenv("GITHUB_STEP_SUMMARY")
+    capture = StringIO()
+    orig_out, orig_err = sys.stdout, sys.stderr
+    if sum_file:
+        sys.stdout = TeeStream(orig_out, capture)
+        sys.stderr = TeeStream(orig_err, capture)
+
+    exit_code = 1
+    try:
+        exit_code = _run_integration(cfg)
+    finally:
+        if sum_file:
+            sys.stdout, sys.stderr = orig_out, orig_err
+            log_blob = capture.getvalue()
+            with open(sum_file, "a", encoding="utf-8") as f:
+                f.write("## 🌐 VM Routing — `test_integration.py`\n\n")
+                f.write(f"**Target:** `{cfg.host}:{cfg.port}`\n\n")
+                f.write(f"**Tests run:** {_state['tests']}\n\n")
+                if _state["failures"] == 0:
+                    f.write("**Result:** ✅ ALL PASSED\n")
+                else:
+                    f.write(f"**Result:** ❌ {_state['failures']} FAILED\n")
+                f.write(markdown_full_log(log_blob))
+
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

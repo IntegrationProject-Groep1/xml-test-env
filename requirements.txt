@@ -1,2 +1,3 @@
 lxml
 pika
+PyYAML>=6.0
