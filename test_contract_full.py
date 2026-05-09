@@ -592,7 +592,7 @@ def test_planning(args, do_p1, do_p2):
     _run_case(args, "planning/session_view_request",
         builder_fn=lambda: producer.create_session_view_request_xml(session_id=T_SESSION),
         xsd_path=xsd("session_view_request.xsd"),
-        msg_type="session_view_request", source="planning",
+        msg_type="session_view_request", source="frontend",
         exch=EXCH, rkey="planning.session.view.request", do_p1=do_p1, do_p2=do_p2)
 
 
