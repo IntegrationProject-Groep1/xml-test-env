@@ -181,8 +181,6 @@ def contract_example_path(repos_dir: Path, flow_id: str) -> Path | None:
     if p.is_file(): return p
     
     # Priority 2: integration-tests/fixtures/ (standard location in this repo)
-    # Often 'examples/foo.xml' maps to 'integration-tests/fixtures/team/foo.xml'
-    # or just 'integration-tests/fixtures/foo.xml'
     name = Path(ex).name
     fixtures = Path(repos_dir) / "integration-tests" / "fixtures"
     if fixtures.is_dir():
@@ -463,9 +461,9 @@ def get_crm_runner(c_dir):
                 createChannel: async () => mockMQ,
                 on: () => {{}}
             }}) }};
-            if (p.includes('sfConnection')) return function() {{ return mockSF; }};
-            if (p.includes('sender')) return function() {{ 
-                const Real = orig.apply(this, arguments);
+            if (p && p.includes('sfConnection')) return function() {{ return mockSF; }};
+            if (p && p.includes('sender')) {{
+                const Real = orig.call(this, p);
                 function Mock() {{
                     Real.apply(this, arguments);
                     this.init = async () => {{}};
@@ -474,7 +472,7 @@ def get_crm_runner(c_dir):
                 }}
                 Mock.prototype = Object.create(Real.prototype);
                 return Mock;
-            }};
+            }}
             return orig.apply(this, arguments);
         }};
         async function run() {{
@@ -488,12 +486,12 @@ def get_crm_runner(c_dir):
                 }} else {{
                     const R = require('./src/receiver'); const r = new R();
                     r.channel = mockMQ; r.sf = mockSF; 
-                    r.sender.channel = mockMQ; r.sender.init = async () => {{}};
+                    if (r.sender) {{ r.sender.channel = mockMQ; r.sender.init = async () => {{}}; }}
                     const content = typeof {json.dumps(d)} === 'string' ? {json.dumps(d)} : JSON.stringify({json.dumps(d)});
                     const msg = {{ content: Buffer.from(content), fields: {{ deliveryTag: 1 }}, properties: {{ contentType: 'application/xml' }} }};
                     let logs = []; 
-                    const oldLog = console.log; console.log = (...a) => {{ oldLog(...a); logs.push(a.join(' ')); }};
-                    const oldErr = console.error; console.error = (...a) => {{ oldErr(...a); logs.push(a.join(' ')); }};
+                    console.log = (...a) => logs.push(a.join(' '));
+                    console.error = (...a) => logs.push(a.join(' '));
                     await r.handleMessage(msg);
                     const err = logs.find(l => (l.includes('Error') || l.includes('INVALID_FIELD')) && !l.includes('WARNING') && !l.includes('RabbitMQ'));
                     if (err) {{ process.stderr.write(err); process.exit(1); }}
@@ -549,558 +547,6 @@ def _make_facturatie_process_fn(f_dir: Path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SUITES
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def test_frontend(args):
-    if not team_applies(args, "frontend"):
-        return
-    header("Frontend (PHP/Drupal)")
-    repos = Path(args.repos_dir); f_dir = find_repo(repos, "IP-groep1-frontend")
-    if not f_dir: fail("Frontend repo not found"); return
-    run = get_frontend_runner(f_dir)
-    xsd = lambda n: f_dir / "xsd" / n
-    reg_data = {"identity_uuid":T_UUID,"email":"t@e.com","first_name":"J","last_name":"J","date_of_birth":"1990-01-01","address":"S 1, 1000 B","session_id":T_SESSION}
-    _run_case(
-        args,
-        "frontend/new_registration",
-        lambda: run("NewRegistrationSender", reg_data),
-        xsd("new_registration.xsd"),
-        "new_registration",
-        "frontend",
-        fallback_flow_id="frontend_new_registration",
-    )
-    _run_case(args, "frontend/session_create_request", lambda: run("SessionCreateRequestSender", {"session_id":T_SESSION,"title":"T","start_datetime":T_NOW,"end_datetime":T_NOW,"location":"L","max_attendees":100}), xsd("session_create_request.xsd"), "session_create_request", "frontend")
-    _run_case(args, "frontend/calendar_invite", lambda: run("CalendarInviteSender", {"session_id":T_SESSION,"title":"T","start_datetime":T_NOW,"end_datetime":T_NOW,"location":"L","identity_uuid":T_UUID,"attendee_email":"t@e.com"}), repos/"contracts/xsd/calendar_invite.xsd", "calendar_invite", "frontend")
-
-def test_kassa(args):
-    if not team_applies(args, "kassa"):
-        return
-    header("Kassa (Odoo)")
-    repos = Path(args.repos_dir); k_dir = find_repo(repos, "Kassa")
-    if not k_dir: fail("Kassa repo not found"); return
-    ki = k_dir / "integratie"; sys.path.insert(0, str(ki))
-    _stub_module("defusedxml.ElementTree", fromstring=etree.fromstring)
-    _stub_module("defusedxml.xmlrpc", monkey_patch=MagicMock()); _stub_module("defusedxml.xmlrpc.monkeypatch", monkey_patch=MagicMock())
-    mock_env = {"RABBIT_HOST":"l","RABBIT_USER":"g","RABBIT_PASS":"g","ODOO_URL":"u","ODOO_DB":"d","ODOO_USER":"u","ODOO_PASS":"p"}
-    with patch.dict(os.environ, mock_env):
-        try:
-            if "sender" in sys.modules: del sys.modules["sender"]
-            if "receiver" in sys.modules: del sys.modules["receiver"]
-            import sender as s; import receiver as r
-            xsd = lambda n: ki / "schemas" / n
-            def k_rec(b):
-                ch = MagicMock()
-                with patch("receiver.get_odoo_connection", return_value=(1, MagicMock())): r.process_message(ch, MagicMock(delivery_tag=1), MagicMock(), b)
-                return ch.basic_ack.called, "Nacked"
-            rec_kassa_only: dict[str, object] = {"kassa": k_rec}
-            rec_consumption_fanout = dict(rec_kassa_only)
-            c_crm = find_repo(repos, "CRM")
-            if c_crm:
-                crm_run = get_crm_runner(c_crm)
-                rec_consumption_fanout["crm"] = lambda b: crm_run("process", "handleMessage", b.decode("utf-8"))
-            f_fact = find_repo(repos, "Facturatie")
-            if f_fact:
-                try:
-                    rec_consumption_fanout["facturatie"] = _make_facturatie_process_fn(f_fact)
-                except Exception as ex:
-                    warn(f"Facturatie receiver not wired for consumption_order fan-out: {ex}")
-            _run_case(
-                args,
-                "kassa/consumption_order",
-                lambda: s.build_consumption_order_xml(
-                    [{"id":"1","sku":"S1","description":"T","quantity":1,"unit_price":"5.0","vat_rate":"21","total_amount":5.0,"currency":"eur","item_type":"food"}],
-                    "42", T_UUID, "private", "t@e.com",
-                    {"street":"S","number":"1","postal_code":"1","city":"B","country":"be"},
-                ),
-                xsd("schema_consumption_order_v2.3.xsd"),
-                "consumption_order",
-                "kassa",
-                receiver_fns=rec_consumption_fanout,
-                fallback_flow_id="kassa_consumption_order",
-            )
-            _run_case(args, "kassa/payment_registered", lambda: s.build_payment_registered_xml("consumption", "paid", "10.0", T_DATE, "T1", "on_site", "I1", T_UUID, T_CORR), xsd("schema_payment_registered_v2.1.xsd"), "payment_registered", "kassa", receiver_fns=rec_kassa_only)
-        except Exception as e: fail(f"Kassa setup error: {e}")
-
-def test_planning(args):
-    if not team_applies(args, "planning"):
-        return
-    header("Planning")
-    repos = Path(args.repos_dir); p_dir = find_repo(repos, "Planning")
-    if not p_dir: fail("Planning repo not found"); return
-    sys.path.insert(0, str(p_dir))
-    _stub_module("log_publisher", publish_log=MagicMock(), action_for_type=lambda t:t)
-    _stub_module("db_config", get_database_connection=lambda:MagicMock())
-    _stub_module("graph_service", GraphService=MagicMock())
-    try:
-        if "producer" in sys.modules: del sys.modules["producer"]; 
-        if "consumer" in sys.modules: del sys.modules["consumer"]
-        import producer as prod
-        import consumer as cons
-        from xml_handlers import parse_session_updated
-        xsd = lambda n: p_dir / "xsd" / n
-        def p_rec_on_message(b):
-            ch = MagicMock()
-            with patch("pika.BlockingConnection"):
-                cons.on_message(ch, MagicMock(routing_key="test"), MagicMock(), b)
-            return ch.basic_ack.called, "Nacked"
-        def p_rec_session_updated(b):
-            ch = MagicMock()
-            with patch("pika.BlockingConnection"):
-                msg = parse_session_updated(b)
-                if msg is None:
-                    return False, "parse_session_updated returned None"
-                cons.handle_session_updated(msg, ch, 1)
-            return ch.basic_ack.called, "Nacked"
-        _run_case(
-            args,
-            "planning/session_created",
-            lambda: prod.create_session_xml(T_SESSION, "T", T_NOW, T_NOW, "A", 100, 0),
-            xsd("session_created.xsd"),
-            "session_created",
-            "planning",
-            receiver_fns={"planning": p_rec_on_message},
-        )
-        _run_case(
-            args,
-            "planning/session_updated",
-            lambda: prod.create_session_updated_xml(
-                T_SESSION, "U", T_NOW, T_NOW, "B", max_attendees=200, current_attendees=10
-            ),
-            xsd("session_updated.xsd"),
-            "session_updated",
-            "planning",
-            receiver_fns={"planning": p_rec_session_updated},
-        )
-    except Exception as e: fail(f"Planning setup error: {e}")
-
-def test_facturatie(args):
-    if not team_applies(args, "facturatie"):
-        return
-    header("Facturatie")
-    repos = Path(args.repos_dir); f_dir = find_repo(repos, "Facturatie")
-    if not f_dir: fail("Facturatie repo not found"); return
-    sys.path.insert(0, str(f_dir))
-    import importlib as _il
-    for k in ["src","src.services","src.utils", "mysql", "mysql.connector"]: 
-        if k in sys.modules: del sys.modules[k]
-    try:
-        _stub_module("mysql.connector", connect=MagicMock()); _stub_module("mysql.connector.pooling", MySQLConnectionPool=MagicMock())
-        _il.import_module("src"); _il.import_module("src.services")
-        _stub_module("src.services.rabbitmq_utils", get_connection=MagicMock(), get_connection_with_retry=MagicMock(), send_to_dlq=MagicMock())
-        _stub_module("src.utils.xml_validator", validate_xml=lambda x,s=None:(True,None))
-        _stub_module("src.services.fossbilling_api", create_registration_invoice=lambda *a: "INV-1", pay_invoice=lambda *a: True)
-        _stub_module("src.services.identity_client", request_master_uuid=lambda *a: T_UUID)
-        _stub_module("src.services.consumption_store", store_consumption=MagicMock())
-        s = _il.import_module("src.services.rabbitmq_sender"); r = _il.import_module("src.services.rabbitmq_receiver")
-        xsd = lambda n: f_dir / "src" / "services" / "xsd" / n
-        def f_rec(b):
-            ch = MagicMock()
-            r.process_message(ch, MagicMock(delivery_tag=1), MagicMock(), b)
-            return ch.basic_ack.called, "Nacked"
-        rec = {"facturatie": f_rec}
-        _run_case(args, "facturatie/send_mailing", lambda: s.build_invoice_created_notification_xml("I1","t@e.com",T_CORR,"J","J","C1",T_UUID), xsd("send_mailing.xsd"), "send_mailing", "facturatie", receiver_fns=rec)
-        _run_case(
-            args,
-            "facturatie/payment_confirmed",
-            lambda: s.build_payment_confirmed_xml(
-                "I1", T_UUID, "75.00", "eur", "online",
-                paid_at=T_NOW, source="facturatie", status="paid", due_date=T_DATE,
-            ),
-            xsd("payment_registered.xsd"),
-            "payment_registered",
-            "facturatie",
-            receiver_fns=rec,
-        )
-    except Exception as e: fail(f"Facturatie setup error: {e}")
-
-def test_crm(args):
-    if not team_applies(args, "crm"):
-        return
-    header("CRM")
-    repos = Path(args.repos_dir); c_dir = find_repo(repos, "CRM")
-    if not c_dir: fail("CRM repo not found"); return
-    run = get_crm_runner(c_dir)
-    xsd = lambda n: c_dir / "xsd" / n
-    def c_rec(b): return run("process", "handleMessage", b.decode('utf-8'))
-    reg_data = {"customer":{"identity_uuid":T_UUID,"email":"lena.declercq@test.be","first_name":"Lena","last_name":"Declercq","type":"private"},"session_id":T_SESSION,"payment_due":{"amount":"10.00","status":"unpaid"},"correlation_id":T_CORR}
-    def crm_build_new_registration_kassa():
-        ok, out = run("build", "sendNewRegistrationToKassa", reg_data)
-        if not ok:
-            raise RuntimeError((out or "").strip() or "CRM sendNewRegistrationToKassa failed")
-        return out
-    _run_case(
-        args,
-        "crm/new_registration",
-        crm_build_new_registration_kassa,
-        xsd("new_registration_kassa.xsd"),
-        "new_registration",
-        "crm",
-        receiver_fns={"crm": c_rec},
-        fallback_flow_id="crm_new_registration",
-    )
-    cons_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<message><header><message_id>{T_CORR}</message_id><timestamp>{T_NOW}</timestamp><source>kassa</source><type>consumption_order</type><version>2.0</version></header>
-<body><is_anonymous>false</is_anonymous><customer><id>42</id><identity_uuid>{T_UUID}</identity_uuid><type>private</type><email>lena.declercq@test.be</email></customer>
-<items><item><id>1</id><sku>S1</sku><description>Beer</description><quantity>1</quantity><unit_price currency="eur">3.00</unit_price><vat_rate>21</vat_rate><total_amount currency="eur">3.00</total_amount></item></items></body></message>"""
-    _run_case(
-        args,
-        "crm/consumption_order",
-        lambda: cons_xml,
-        xsd("consumption_order.xsd"),
-        "consumption_order",
-        "kassa",
-        receiver_fns={"crm": c_rec},
-        fallback_flow_id="kassa_consumption_order",
-    )
-
-def test_identity(args):
-    if not team_applies(args, "identity"):
-        return
-    header("Identity")
-    repos = Path(args.repos_dir)
-    i_dir = find_repo(repos, "identity-service")
-    if not i_dir:
-        fail("Identity repo not found")
-        return
-    sys.path.insert(0, str(i_dir))
-    _stub_module("database", SessionLocal=MagicMock())
-    _stub_module("defusedxml.ElementTree", fromstring=etree.fromstring)
-    import rabbitmq_service as i_svc
-    id_xsd = repos / "contracts" / "xsd" / "identity_event.xsd"
-    def capture_pub():
-        captured = []
-        with patch("rabbitmq_service.get_rabbitmq_connection") as mock_conn:
-            mock_ch = mock_conn.return_value.channel.return_value
-            mock_ch.basic_publish.side_effect = lambda *a, **k: captured.append(
-                k.get("body", b"").decode("utf-8")
-            )
-            i_svc.publish_user_created(UUID(T_UUID), "t@e.com", "id-service")
-        return captured[0] if captured else None
-    _run_case(
-        args,
-        "identity/user_created",
-        capture_pub,
-        id_xsd,
-        "UserCreated",
-        "id-service",
-        flat_root="user_event",
-    )
-
-def test_mailing(args):
-    if not team_applies(args, "mailing"):
-        return
-    header("Mailing")
-    repos = Path(args.repos_dir)
-    m_dir = find_repo(repos, "Mailing")
-    if not m_dir:
-        fail("Mailing repo not found")
-        return
-    ms = m_dir / "mailing_service"
-    sys.path.insert(0, str(ms))
-    _stub_module("sendgrid_client", SendGridAPIClient=MagicMock(), Recipient=MagicMock(), Attachment=MagicMock(), SendGridError=Exception)
-    from publishers import mailing_status
-    from consumers import send_mailing as send_mailing_consumer
-    import envelope
-    xsd = lambda n: ms / "schemas" / n
-    _run_case(
-        args,
-        "mailing/mailing_status",
-        lambda: etree.tostring(
-            mailing_status._build_element(
-                correlation_id=T_CORR,
-                campaign_id="C1",
-                subject="S",
-                sent=1,
-                delivered=1,
-                bounced=0,
-                opened=0,
-                bounced_emails=[],
-                status="completed",
-            ),
-            encoding="unicode",
-        ),
-        xsd("mailing_status.xsd"),
-        "mailing_status",
-        "mailing",
-    )
-    send_xsd = etree.XMLSchema(etree.parse(xsd("send_mailing")))
-    def m_rec(b):
-        ch = MagicMock()
-        env = envelope.parse_and_validate(b, send_xsd)
-        with patch.dict(os.environ, {"FROM_EMAIL": "audit@test.local"}, clear=False):
-            with patch("sendgrid_client.send_template_email", return_value=MagicMock(rejected=[])):
-                with patch("templates.resolve_template_id", return_value="d-test-template"):
-                    send_mailing_consumer.handle(env, ch)
-        return True, ""
-    m_xml = f'<message><header><message_id>{T_CORR}</message_id><timestamp>{T_NOW}</timestamp><source>crm</source><type>send_mailing</type><version>2.0</version><correlation_id>{T_CORR}</correlation_id></header><body><campaign_id>C1</campaign_id><subject>S</subject><mail_type>welcome</mail_type><recipients><recipient><email>t@e.com</email><identity_uuid>{T_UUID}</identity_uuid><contact><first_name>T</first_name><last_name>U</last_name></contact></recipient></recipients></body></message>'
-    _run_case(
-        args,
-        "mailing/send_mailing_in",
-        lambda: m_xml,
-        repos / "contracts" / "xsd" / "mailing_send.xsd",
-        "send_mailing",
-        "crm",
-        receiver_fns={"mailing": m_rec},
-    )
-
-def test_e2e_chains(args):
-    """
-    End-to-end hops from contract_flows: built XML is passed into the next consumer’s handler.
-    Builders use contract `example:` XML when they crash or return empty (see _run_case fallback).
-    """
-    if args.no_chains:
-        return
-    if not (
-        all_teams_applies(args, "frontend", "crm")
-        or all_teams_applies(args, "crm", "kassa")
-    ):
-        return
-    header("E2E chains (multi-hop)")
-    repos = Path(args.repos_dir)
-
-    if all_teams_applies(args, "frontend", "crm"):
-        f_dir = find_repo(repos, "IP-groep1-frontend")
-        c_dir = find_repo(repos, "CRM")
-        if f_dir and c_dir:
-            run_fe = get_frontend_runner(f_dir)
-            run_crm = get_crm_runner(c_dir)
-            reg_data = {
-                "identity_uuid": T_UUID,
-                "email": "t@e.com",
-                "first_name": "J",
-                "last_name": "J",
-                "date_of_birth": "1990-01-01",
-                "address": "S 1, 1000 B",
-                "session_id": T_SESSION,
-            }
-            xsd_fe = f_dir / "xsd" / "new_registration.xsd"
-            _run_case(
-                args,
-                "e2e/frontend→crm:new_registration",
-                lambda: run_fe("NewRegistrationSender", reg_data),
-                xsd_fe,
-                "new_registration",
-                "frontend",
-                receiver_fns={"crm": lambda b: run_crm("process", "handleMessage", b.decode("utf-8"))},
-                fallback_flow_id="frontend_new_registration",
-            )
-        else:
-            skip("E2E frontend→crm skipped (frontend or CRM repo missing)")
-
-    if all_teams_applies(args, "crm", "kassa"):
-        c_dir = find_repo(repos, "CRM")
-        k_dir = find_repo(repos, "Kassa")
-        if c_dir and k_dir:
-            ki = k_dir / "integratie"
-            sys.path.insert(0, str(ki))
-            _stub_module("defusedxml.ElementTree", fromstring=etree.fromstring)
-            _stub_module("defusedxml.xmlrpc", monkey_patch=MagicMock())
-            _stub_module("defusedxml.xmlrpc.monkeypatch", monkey_patch=MagicMock())
-            mock_env = {
-                "RABBIT_HOST": "l",
-                "RABBIT_USER": "g",
-                "RABBIT_PASS": "g",
-                "ODOO_URL": "u",
-                "ODOO_DB": "d",
-                "ODOO_USER": "u",
-                "ODOO_PASS": "p",
-            }
-            try:
-                with patch.dict(os.environ, mock_env):
-                    if "sender" in sys.modules:
-                        del sys.modules["sender"]
-                    if "receiver" in sys.modules:
-                        del sys.modules["receiver"]
-                    import receiver as r_kassa
-                def k_rec_e2e(b):
-                    ch = MagicMock()
-                    with patch("receiver.get_odoo_connection", return_value=(1, MagicMock())):
-                        r_kassa.process_message(ch, MagicMock(delivery_tag=1), MagicMock(), b)
-                    return ch.basic_ack.called, "Nacked"
-                run = get_crm_runner(c_dir)
-                reg_data = {
-                    "customer": {
-                        "identity_uuid": T_UUID,
-                        "email": "lena.declercq@test.be",
-                        "first_name": "Lena",
-                        "last_name": "Declercq",
-                        "type": "private",
-                    },
-                    "session_id": T_SESSION,
-                    "payment_due": {"amount": "10.00", "status": "unpaid"},
-                    "correlation_id": T_CORR,
-                }
-                def crm_build_new_registration_kassa_e2e():
-                    ok, out = run("build", "sendNewRegistrationToKassa", reg_data)
-                    if not ok:
-                        raise RuntimeError((out or "").strip() or "CRM sendNewRegistrationToKassa failed")
-                    return out
-                xsd_nk = c_dir / "xsd" / "new_registration_kassa.xsd"
-                _run_case(
-                    args,
-                    "e2e/crm→kassa:new_registration",
-                    crm_build_new_registration_kassa_e2e,
-                    xsd_nk,
-                    "new_registration",
-                    "crm",
-                    receiver_fns={"kassa": k_rec_e2e},
-                    fallback_flow_id="crm_new_registration",
-                )
-            except Exception as e:
-                fail(f"E2E CRM→Kassa chain error: {e}")
-        else:
-            skip("E2E crm→kassa skipped (CRM or Kassa repo missing)")
-
-
-def test_contract_example_sweep(args):
-    """
-    For every flow in contract_flows.yaml that defines both `example` and `schema`,
-    validate the checked-in example XML against the checked-in XSD under contracts/.
-    """
-    if getattr(args, "no_contract_sweep", False):
-        return
-    header("Contract examples (contract_flows.yaml → XSD)")
-    repos = Path(args.repos_dir)
-    contracts_root = repos / "contracts"
-    if not contracts_root.is_dir():
-        warn("contracts/ not found — example sweep skipped")
-        return
-    if not _YAML_AVAILABLE:
-        skip("PyYAML missing — cannot read contract_flows.yaml")
-        return
-    if not _LXML_AVAILABLE:
-        skip("lxml missing — cannot validate XSD")
-        return
-    for fid in sorted(_flows_by_id().keys()):
-        flow = _flows_by_id()[fid]
-        ex = flow.get("example")
-        sc = flow.get("schema")
-        if not ex or ex in ("~", None) or not sc or sc in ("~", None):
-            continue
-        epath = contracts_root / ex
-        spath = contracts_root / sc
-        name = f"contract-sweep/{fid}"
-        print(f"\n  [{name}]")
-        _state["tests"] += 1
-        res = {
-            "name": name,
-            "p1": "fail",
-            "p3": "skip",
-            "error": "",
-            "proc_error": "",
-            "used_fallback": False,
-        }
-        if not epath.is_file():
-            fail(f"Example file missing: {epath}")
-            res["error"] = "example file missing"
-        elif not spath.is_file():
-            fail(f"Schema file missing: {spath}")
-            res["error"] = "schema file missing"
-        else:
-            try:
-                xml_str = epath.read_text(encoding="utf-8")
-                valid, err = validate_against_xsd(xml_str, spath)
-                if valid:
-                    ok(f"Phase 1: example validates ({spath.name})")
-                    res["p1"] = "pass"
-                else:
-                    fail(f"Phase 1: XSD invalid: {err}")
-                    res["error"] = err or "XSD invalid"
-            except OSError as e:
-                fail(f"Read error: {e}")
-                res["error"] = str(e)
-        if res["p1"] == "fail":
-            _state["failures"] += 1
-        _state["results"].append(res)
-
-
-def test_shared(args):
-    if not (team_applies(args, "heartbeat") or team_applies(args, "monitoring")):
-        return
-    header("Heartbeat & Monitoring")
-    repos = Path(args.repos_dir)
-    h_dir = find_repo(repos, "heartbeat")
-    
-    if h_dir and team_applies(args, "heartbeat"):
-        # Instead of importing sidecar.py (which has a module-level infinite loop),
-        # we define the builder locally to verify the XML structure against the XSD.
-        def local_build_heartbeat_xml(system_name, status, uptime):
-            import xml.etree.ElementTree as ET
-            import uuid
-            from datetime import datetime, timezone
-            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            message = ET.Element("message")
-            header = ET.SubElement(message, "header")
-            ET.SubElement(header, "message_id").text = str(uuid.uuid4())
-            ET.SubElement(header, "timestamp").text = timestamp
-            ET.SubElement(header, "source").text = system_name
-            ET.SubElement(header, "type").text = "heartbeat"
-            ET.SubElement(header, "version").text = "2.0"
-            body = ET.SubElement(message, "body")
-            ET.SubElement(body, "status").text = status
-            ET.SubElement(body, "uptime").text = str(uptime)
-            return ET.tostring(message, encoding='unicode')
-
-        _run_case(
-            args,
-            "heartbeat/heartbeat",
-            lambda: local_build_heartbeat_xml("hb_service", "online", 3600),
-            h_dir / "heartbeat.xsd",
-            "heartbeat",
-            "hb_service",
-        )
-    mon_dir = find_repo(repos, "monitoring")
-    if mon_dir and team_applies(args, "monitoring"):
-        det = mon_dir / "detector"; sys.path.insert(0, str(det))
-        from datetime import timezone as tz
-        _stub_module("elasticsearch", Elasticsearch=MagicMock())
-        mock_log = MagicMock()
-        _stub_module("logging", getLogger=lambda n: mock_log)
-        mon_env = {
-            "RABBITMQMONITORING_USER": "guest",
-            "RABBITMQMONITORING_PASS": "guest",
-            "RABBITMQ_HOST": args.host,
-            "RABBITMQ_PORT": str(args.port),
-            "RABBITMQ_VHOST": args.vhost,
-        }
-        with patch.dict(os.environ, mon_env, clear=False):
-            with patch("datetime.timezone", tz):
-                if "detector" in sys.modules: del sys.modules["detector"]
-                try:
-                    _stub_module("pika", BlockingConnection=MagicMock())
-                    with patch("pika.BlockingConnection"):
-                        # detector.py has a top-level `while True:` loop.
-                        # We read the file, strip the loop, and then exec it.
-                        src = (det / "detector.py").read_text(encoding="utf-8")
-                        if src.startswith('\ufeff'): src = src[1:]
-                        # Remove the while True block (assuming it's at the end)
-                        safe_src = re.split(r'^while\s+True:', src, flags=re.MULTILINE)[0]
-                        
-                        detector = types.ModuleType("detector")
-                        detector.logger = mock_log
-                        detector.__dict__["__file__"] = str(det / "detector.py")
-                        sys.modules["detector"] = detector
-                        exec(safe_src, detector.__dict__)
-
-                        def capture_alert_xml(sys_name):
-                            captured = []
-                            mock_ch = MagicMock()
-                            mock_ch.basic_publish.side_effect = lambda exchange, routing_key, body, properties=None, mandatory=False: captured.append(body)
-                            
-                            with patch("pika.BlockingConnection") as mock_conn_cls:
-                                mock_conn = mock_conn_cls.return_value
-                                mock_conn.channel.return_value = mock_ch
-                                detector.send_alert_xml(sys_name)
-                            return captured[0] if captured else None
-
-                        _run_case(args, "monitoring/system_alert", lambda: capture_alert_xml("kassa") or "", mon_dir / "xsd" / "system_alert.xsd", "HEARTBEAT_CRITICAL", "monitoring", flat_root="alert")
-
-                except Exception as e:
-                    fail(f"monitoring/system_alert: Module setup failed: {e}")
-                    traceback.print_exc()
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # DYNAMIC E2E RUNNER
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1129,10 +575,10 @@ class DynamicFlowRunner:
             self.producers[("frontend", "user_registered")] = lambda: run_fe("UserRegisteredSender", {"identity_uuid": T_UUID, "type": "private"})
             self.producers[("frontend", "user_updated")] = lambda: run_fe("UserUpdatedSender", {"identity_uuid": T_UUID, "email": "new@e.com"})
             self.producers[("frontend", "user_checkin")] = lambda: run_fe("UserCheckinSender", {"identity_uuid": T_UUID, "session_id": T_SESSION})
-            self.producers[("frontend", "event_ended")] = lambda: run_fe("EventEndedSender", {"event_id": "EV-001", "end_time": T_NOW})
+            self.producers[("frontend", "event_ended")] = lambda: run_fe("EventEndedSender", {"event_id": "EV-001", "session_id": T_SESSION, "end_time": T_NOW})
             self.producers[("frontend", "calendar_invite")] = lambda: run_fe("CalendarInviteSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "identity_uuid": T_UUID, "attendee_email": "t@e.com"})
             self.producers[("frontend", "session_create_request")] = lambda: run_fe("SessionCreateRequestSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "max_attendees": 100})
-            self.producers[("frontend", "session_update_request")] = lambda: run_fe("SessionUpdateRequestSender", {"session_id": T_SESSION, "title": "U"})
+            self.producers[("frontend", "session_update_request")] = lambda: run_fe("SessionUpdateRequestSender", {"session_id": T_SESSION, "title": "U", "start_datetime": T_NOW, "end_datetime": T_NOW})
             self.producers[("frontend", "session_delete_request")] = lambda: run_fe("SessionDeleteRequestSender", {"session_id": T_SESSION})
             self.producers[("frontend", "cancel_registration")] = lambda: run_fe("CancelRegistrationSender", {"identity_uuid": T_UUID, "session_id": T_SESSION})
             self.producers[("frontend", "user_deleted")] = lambda: run_fe("UserUnregisteredSender", {"identity_uuid": T_UUID}) # Note: Unregistered -> user_deleted mapping
@@ -1142,7 +588,7 @@ class DynamicFlowRunner:
             self.producers[("frontend", "company_delete")] = lambda: run_fe("CompanyDeleteSender", {"company_id": "C1"})
 
             # Receivers
-            self.receivers["frontend"] = lambda b: (True, "") # Frontend mostly just sends, but handles some status updates
+            self.receivers["frontend"] = lambda b: (True, "") 
 
             # XSDs
             self.xsd_map["frontend_new_registration"] = f_dir / "xsd" / "new_registration.xsd"
@@ -1178,7 +624,6 @@ class DynamicFlowRunner:
         if k_dir:
             ki = k_dir / "integratie"
             sys.path.insert(0, str(ki))
-            # Stub dependencies for direct Python execution
             _stub_module("defusedxml.ElementTree", fromstring=etree.fromstring)
             _stub_module("defusedxml.xmlrpc", monkey_patch=MagicMock())
             mock_env = {"RABBIT_HOST": args.host, "RABBIT_PORT": str(args.port), "RABBIT_USER": args.user, "RABBIT_PASS": args.password, "ODOO_URL":"u","ODOO_DB":"d","ODOO_USER":"u","ODOO_PASS":"p"}
@@ -1193,18 +638,15 @@ class DynamicFlowRunner:
                         "42", T_UUID, "private", "t@e.com", {"street":"S","number":"1","postal_code":"1","city":"B","country":"be"}
                     )
                     self.producers[("kassa", "payment_registered")] = lambda: s_k.build_payment_registered_xml("consumption", "paid", "10.0", T_DATE, "T1", "on_site", "I1", T_UUID, T_CORR)
-                    self.producers[("kassa", "badge_assigned")] = lambda: s_k.build_badge_assigned_xml(T_UUID, T_BADGE, "main_bar")
-                    self.producers[("kassa", "refund_processed")] = lambda: s_k.build_refund_processed_xml("T1", "10.0", "eur", T_NOW)
-                    self.producers[("kassa", "wallet_balance_update")] = lambda: s_k.build_wallet_balance_update_xml(T_UUID, "12.50", "crm", "active")
-                    self.producers[("kassa", "payment_status")] = lambda: s_k.build_payment_status_xml("T1", "success", "Payment accepted")
-                    self.producers[("kassa", "invoice_request")] = lambda: s_k.build_invoice_request_xml(T_UUID, "42", "I1", "10.0")
+                    self.producers[("kassa", "badge_assigned")] = lambda: s_k.build_badge_assigned_xml(T_BADGE, T_UUID)
+                    self.producers[("kassa", "refund_processed")] = lambda: s_k.build_refund_processed_xml(T_CORR, "partial", 10.0, "card_reversal", "duplicate_payment", "T1", identity_uuid=T_UUID)
+                    self.producers[("kassa", "wallet_balance_update")] = lambda: s_k.build_wallet_balance_update_xml(T_UUID, 12.50, authority="crm", status="active")
+                    self.producers[("kassa", "payment_status")] = lambda: s_k.build_payment_status_xml(T_UUID, "success")
+                    self.producers[("kassa", "invoice_request")] = lambda: s_k.build_invoice_request_xml(T_UUID, {"first_name":"J","last_name":"J","email":"t@e.com"}, T_CORR)
 
                     self.xsd_map["kassa_consumption_order"] = ki / "schemas" / "schema_consumption_order_v2.3.xsd"
                     self.xsd_map["kassa_payment_registered_consumption"] = ki / "schemas" / "schema_payment_registered_v2.1.xsd"
                     self.xsd_map["kassa_payment_registered_registration"] = ki / "schemas" / "schema_payment_registered_v2.1.xsd"
-                    self.xsd_map["kassa_badge_assigned"] = ki / "schemas" / "schema_badge_assigned_v2.1.xsd"
-                    self.xsd_map["kassa_refund_processed"] = ki / "schemas" / "schema_refund_processed_v2.1.xsd"
-                    self.xsd_map["kassa_invoice_request"] = ki / "schemas" / "schema_invoice_request_v2.1.xsd"
                 except Exception as e:
                     warn(f"Kassa dynamic setup failed: {e}")
 
@@ -1226,9 +668,7 @@ class DynamicFlowRunner:
                 self.producers[("planning", "session_deleted")] = lambda: prod_p.create_session_deleted_xml(T_SESSION)
                 self.producers[("planning", "session_occupancy_update")] = lambda: prod_p.create_session_occupancy_xml(T_SESSION, 150)
                 self.producers[("planning", "calendar_invite_confirmed")] = lambda: prod_p.create_calendar_invite_confirmed_xml(T_SESSION, T_UUID, "confirmed")
-
                 self.receivers["planning"] = lambda b: (patch("pika.BlockingConnection")(lambda _: (cons_p.on_message(MagicMock(), MagicMock(routing_key="test"), MagicMock(), b), MagicMock()))()[0], "Nacked")
-                
                 self.xsd_map["planning_session_updated"] = p_dir / "xsd" / "session_updated.xsd"
                 self.xsd_map["planning_session_deleted"] = p_dir / "xsd" / "session_deleted.xsd"
                 self.xsd_map["planning_session_occupancy_update"] = p_dir / "xsd" / "session_occupancy_update.xsd"
@@ -1243,14 +683,13 @@ class DynamicFlowRunner:
                 import src.services.rabbitmq_sender as s_f
                 self.producers[("facturatie", "invoice_status")] = lambda: s_f.build_invoice_created_notification_xml("I1","t@e.com",T_CORR,"J","J","C1",T_UUID)
                 self.producers[("facturatie", "payment_registered")] = lambda: s_f.build_payment_confirmed_xml("I1", T_UUID, "75.00", "eur", "online", paid_at=T_NOW, source="facturatie", status="paid", due_date=T_DATE)
-                self.producers[("facturatie", "send_mailing")] = lambda: s_f.build_invoice_created_notification_xml("I1","t@e.com",T_CORR,"J","J","C1",T_UUID) # Same helper often
-                
+                self.producers[("facturatie", "send_mailing")] = lambda: s_f.build_invoice_created_notification_xml("I1","t@e.com",T_CORR,"J","J","C1",T_UUID)
                 self.xsd_map["facturatie_send_mailing"] = f_fact / "src" / "services" / "xsd" / "send_mailing.xsd"
                 self.xsd_map["facturatie_payment_registered"] = f_fact / "src" / "services" / "xsd" / "payment_registered.xsd"
             except Exception as e:
                 warn(f"Facturatie dynamic setup failed: {e}")
 
-        # 6. IDENTITY (Python) - Section 15 (Exception to Envelope Rule)
+        # 6. IDENTITY (Python) - Section 15
         i_dir = find_repo(repos, "identity-service")
         if i_dir:
             sys.path.insert(0, str(i_dir))
@@ -1312,111 +751,118 @@ class DynamicFlowRunner:
             team = flow["producer"]["team"]
             msg_type = flow["type"]
             source = flow["source"]
-            
-            # Skip if we don't even have the producer team selected
-            if not team_applies(args, team) and team != "*":
-                continue
-
+            if not team_applies(args, team) and team != "*": continue
             builder = self.producers.get((team, msg_type))
-            if not builder and team == "*":
-                # Special case for shared flows (heartbeat/log) if needed
-                continue
-
-            # Identify receivers for this flow
             flow_receivers = {}
             for consumer in flow.get("consumers", []):
                 c_team = consumer["team"]
                 if c_team in self.receivers and team_applies(args, c_team):
                     flow_receivers[c_team] = self.receivers[c_team]
-
-            # Resolve XSD
             xsd_path = self.xsd_map.get(flow_id)
             if not xsd_path and flow.get("schema"):
-                # Fallback to contracts/xsd/
                 sc = flow["schema"].replace("schemas/", "xsd/")
                 xsd_path = self.repos_dir / "contracts" / sc
+            if not xsd_path or not xsd_path.exists():
+                xsd_path = self.repos_dir / "contracts" / "xsd" / f"{msg_type}.xsd"
+            _run_case(args, f"dynamic/{flow_id}", builder if builder else lambda: None, xsd_path, msg_type, source, receiver_fns=flow_receivers if flow_receivers else None, fallback_flow_id=flow_id)
 
-            _run_case(
-                args,
-                f"dynamic/{flow_id}",
-                builder if builder else lambda: None,
-                xsd_path,
-                msg_type,
-                source,
-                receiver_fns=flow_receivers if flow_receivers else None,
-                fallback_flow_id=flow_id
-            )
+def test_shared(args):
+    if not (team_applies(args, "heartbeat") or team_applies(args, "monitoring")): return
+    header("Heartbeat & Monitoring")
+    repos = Path(args.repos_dir); h_dir = find_repo(repos, "heartbeat")
+    if h_dir and team_applies(args, "heartbeat"):
+        def local_build_heartbeat_xml(system_name, status, uptime):
+            import xml.etree.ElementTree as ET
+            message = ET.Element("message")
+            header = ET.SubElement(message, "header")
+            ET.SubElement(header, "message_id").text = str(uuid.uuid4())
+            ET.SubElement(header, "timestamp").text = T_NOW
+            ET.SubElement(header, "source").text = system_name
+            ET.SubElement(header, "type").text = "heartbeat"
+            ET.SubElement(header, "version").text = "2.0"
+            body = ET.SubElement(message, "body")
+            ET.SubElement(body, "status").text = status
+            ET.SubElement(body, "uptime").text = str(uptime)
+            return ET.tostring(message, encoding='unicode')
+        _run_case(args, "heartbeat/heartbeat", lambda: local_build_heartbeat_xml("hb_service", "online", 3600), h_dir / "heartbeat.xsd", "heartbeat", "hb_service")
+    mon_dir = find_repo(repos, "monitoring")
+    if mon_dir and team_applies(args, "monitoring"):
+        det = mon_dir / "detector"; sys.path.insert(0, str(det))
+        _stub_module("elasticsearch", Elasticsearch=MagicMock())
+        mock_log = MagicMock(); _stub_module("logging", getLogger=lambda n: mock_log)
+        mon_env = {"RABBITMQMONITORING_USER": "guest", "RABBITMQMONITORING_PASS": "guest", "RABBITMQ_HOST": args.host, "RABBITMQ_PORT": str(args.port), "RABBITMQ_VHOST": args.vhost}
+        with patch.dict(os.environ, mon_env, clear=False):
+            with patch("datetime.timezone", timezone.utc):
+                if "detector" in sys.modules: del sys.modules["detector"]
+                try:
+                    _stub_module("pika", BlockingConnection=MagicMock())
+                    src = (det / "detector.py").read_text(encoding="utf-8")
+                    if src.startswith('\ufeff'): src = src[1:]
+                    safe_src = re.split(r'^while\s+True:', src, flags=re.MULTILINE)[0]
+                    detector = types.ModuleType("detector")
+                    detector.logger = mock_log; detector.__dict__["__file__"] = str(det / "detector.py")
+                    sys.modules["detector"] = detector; exec(safe_src, detector.__dict__)
+                    def capture_alert_xml(sys_name):
+                        captured = []
+                        mock_ch = MagicMock()
+                        mock_ch.basic_publish.side_effect = lambda exchange, routing_key, body, properties=None, mandatory=False: captured.append(body)
+                        with patch("pika.BlockingConnection") as mock_conn_cls:
+                            mock_conn = mock_conn_cls.return_value; mock_conn.channel.return_value = mock_ch
+                            detector.send_alert_xml(sys_name)
+                        return captured[0] if captured else None
+                    _run_case(args, "monitoring/system_alert", lambda: capture_alert_xml("kassa") or "", mon_dir / "xsd" / "system_alert.xsd", "HEARTBEAT_CRITICAL", "monitoring", flat_root="alert")
+                except Exception as e: fail(f"monitoring/system_alert: Module setup failed: {e}")
+
+def test_contract_example_sweep(args):
+    if getattr(args, "no_contract_sweep", False): return
+    header("Contract examples (contract_flows.yaml → XSD)")
+    repos = Path(args.repos_dir); contracts_root = repos / "contracts"
+    if not contracts_root.is_dir() or not _YAML_AVAILABLE or not _LXML_AVAILABLE: return
+    for fid in sorted(_flows_by_id().keys()):
+        flow = _flows_by_id()[fid]; ex = flow.get("example"); sc = flow.get("schema")
+        if not ex or ex in ("~", None) or not sc or sc in ("~", None): continue
+        epath = contracts_root / ex; spath = contracts_root / sc
+        name = f"contract-sweep/{fid}"
+        print(f"\n  [{name}]")
+        _state["tests"] += 1
+        res = {"name": name, "p1": "fail", "p3": "skip", "error": "", "proc_error": "", "used_fallback": False}
+        if not epath.is_file(): fail(f"Example file missing: {epath}"); res["error"] = "example file missing"
+        elif not spath.is_file(): fail(f"Schema file missing: {spath}"); res["error"] = "schema file missing"
+        else:
+            try:
+                xml_str = epath.read_text(encoding="utf-8")
+                valid, err = validate_against_xsd(xml_str, spath)
+                if valid: ok(f"Phase 1: example validates ({spath.name})"); res["p1"] = "pass"
+                else: fail(f"Phase 1: XSD invalid: {err}"); res["error"] = err or "XSD invalid"
+            except OSError as e: fail(f"Read error: {e}"); res["error"] = str(e)
+        if res["p1"] == "fail": _state["failures"] += 1
+        _state["results"].append(res)
 
 def main():
-    args = parse_args()
-    load_env(args.env)
-    sum_file = os.getenv("GITHUB_STEP_SUMMARY")
-    capture = StringIO()
-    orig_out, orig_err = sys.stdout, sys.stderr
-    if sum_file:
-        sys.stdout = TeeStream(orig_out, capture)
-        sys.stderr = TeeStream(orig_err, capture)
-
-    exit_code = 0
-    abort_msg = None
+    args = parse_args(); load_env(args.env)
+    sum_file = os.getenv("GITHUB_STEP_SUMMARY"); capture = StringIO(); orig_out, orig_err = sys.stdout, sys.stderr
+    if sum_file: sys.stdout = TeeStream(orig_out, capture); sys.stderr = TeeStream(orig_err, capture)
+    exit_code = 0; abort_msg = None
     try:
-        if not _YAML_AVAILABLE:
-            warn("PyYAML not installed — `contract_flows.yaml` fallbacks disabled (pip install PyYAML)")
+        if not _YAML_AVAILABLE: warn("PyYAML not installed — `contract_flows.yaml` fallbacks disabled")
         print(f"\n{BOLD}COMPREHENSIVE BEHAVIORAL AUDIT — v2.3{RESET}")
-        print(f"Goal: Executing production code for EVERY flow across ALL teams.")
-        
-        # New Dynamic Runner
-        runner = DynamicFlowRunner(Path(args.repos_dir))
-        runner.setup(args)
-        runner.run_all(args)
-
-        # Legacy/Specialized tests (can be phased out as DynamicRunner grows)
-        # test_frontend(args)
-        # test_kassa(args)
-        # ...
-        
-        test_shared(args)
-        test_contract_example_sweep(args)
-
+        runner = DynamicFlowRunner(Path(args.repos_dir)); runner.setup(args); runner.run_all(args)
+        test_shared(args); test_contract_sweep = test_contract_example_sweep(args)
         tot, fail_count = _state["tests"], _state["failures"]
         print(f"\n{'═'*60}\n{tot - fail_count} PASSED / {fail_count} FAILED")
         exit_code = 1 if fail_count else 0
-    except SystemExit as e:
-        abort_msg = f"SystemExit({e.code!r})"
-        exit_code = e.code if isinstance(e.code, int) else 1
     except Exception as e:
-        abort_msg = f"{type(e).__name__}: {e}"
-        traceback.print_exc()
-        exit_code = 1
+        abort_msg = f"{type(e).__name__}: {e}"; traceback.print_exc(); exit_code = 1
     finally:
         if sum_file:
             sys.stdout, sys.stderr = orig_out, orig_err
-            try:
-                with open(sum_file, "a", encoding="utf-8") as f:
-                    f.write("## 🧪 Comprehensive Behavioral Audit — `test_contract_full.py`\n\n")
-                    if abort_msg:
-                        f.write(
-                            f"⚠️ **Run interrupted:** {abort_msg}\n\n"
-                            "_Partial results below; see full console log for the traceback._\n\n"
-                        )
-                    f.write("| Test Case | Phase 1 (XSD) | Phase 3 (Logic) |\n|---|---|---|\n")
-                    for r in _state["results"]:
-                        p1 = "✅" if r["p1"] == "pass" else "❌" if r["p1"] == "fail" else "⏭️"
-                        p3 = "✅" if r["p3"] == "pass" else "❌" if r["p3"] == "fail" else "⏭️"
-                        f.write(f"| `{r['name']}` | {p1} | {p3} |\n")
-                    failed = [r for r in _state["results"] if r["p1"] == "fail" or r["p3"] == "fail"]
-                    if failed:
-                        f.write("\n### ⚠️ Behavioral failures\n\n")
-                        for r in failed:
-                            if r["p1"] == "fail":
-                                f.write(f"**`{r['name']} (XSD)`** — {r['error']}\n\n")
-                            if r["p3"] == "fail":
-                                f.write(f"**`{r['name']} (Logic)`** — {r['proc_error']}\n\n")
-                    f.write(markdown_full_log(capture.getvalue()))
-            except OSError:
-                pass
-
+            with open(sum_file, "a", encoding="utf-8") as f:
+                f.write("## 🧪 Behavioral Audit v2.3\n\n| Test Case | XSD | Logic |\n|---|---|---|\n")
+                for r in _state["results"]:
+                    p1 = "✅" if r["p1"] == "pass" else "❌" if r["p1"] == "fail" else "⏭️"
+                    p3 = "✅" if r["p3"] == "pass" else "❌" if r["p3"] == "fail" else "⏭️"
+                    f.write(f"| `{r['name']}` | {p1} | {p3} |\n")
+                f.write(markdown_full_log(capture.getvalue()))
     sys.exit(exit_code)
-
 
 if __name__ == "__main__": main()
