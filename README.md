@@ -1,97 +1,118 @@
-# 🧪 XML Test Environment & Playground
+# XML Test Environment — Groep 1
 
-Deze directory is de **sandbox** en het **referentie-archief** voor alle XML-berichten en XSD-schema's binnen Groep 1. Het is ontworpen om een veilige plek te bieden voor het ontwikkelen, debuggen en documenteren van het message-contract voordat wijzigingen in de hoofd-integratietest worden doorgevoerd.
-
----
-
-## 🎯 Waarom deze map?
-In een complex project met 8 teams is het contract (de XSD) heilig. Deze map helpt je om:
-1.  **Contract-First Design:** Ontwerp je bericht (XML) en regel (XSD) hier als eerste.
-2.  **Referentie:** Nieuwe teamleden kunnen hier precies zien hoe een `payment_registered` of `session_created` bericht eruit moet zien.
-3.  **Local Development:** Test je eigen service tegen een lokale RabbitMQ met mock-receivers zonder dat de hele infra omhoog moet.
+Centrale testhub voor alle XML-berichtflows binnen het integratieproject.
 
 ---
 
-## 📂 Structuur van de Playground
+## Scripts
 
-| Map/Bestand | Omschrijving |
-| :--- | :--- |
-| `schemas/` | Bevat alle `.xsd` bestanden. Dit is de "Source of Truth" voor berichtstructuren. |
-| `examples/` | Voorbeeld `.xml` bestanden voor elk berichttype. Handig voor documentatie en testen. |
-| `senders/` | Python scripts die specifieke berichten kunnen genereren en versturen. |
-| `receivers/` | Mock-diensten die luisteren naar queues en loggen wat ze ontvangen (gebruikt in Docker). |
-| `docker-compose.yml` | Start een lokale RabbitMQ en alle mock-receivers voor een volledige sandbox ervaring. |
-
----
-
-## 🛠️ Beschikbare Tools (Scripts)
-
-### 1. `validate_examples.py`
-**Gebruik:** `python validate_examples.py`
-Valideert alle XML-bestanden in de `examples/` map tegen de bijbehorende XSD in `schemas/`. Dit is de eerste stap bij elke wijziging.
-
-### 2. `run_all.py`
-**Gebruik:** `python run_all.py [--dry-run]`
-Verstuurt een hele batterij aan testberichten (gedefinieerd in de `senders/`) naar de lokale RabbitMQ. 
-*   Gebruik `--dry-run` om alleen de XSD-validatie te doen zonder te versturen.
-
-### 3. `setup_queues.py`
-**Gebruik:** `python setup_queues.py`
-Configureert een schone RabbitMQ-instantie met alle benodigde exchanges (topic/fanout) en queues zoals gedefinieerd in het v2.3 contract.
-
-### 4. `run_contract_tests.py`
-Dit script bevat de mapping van `(source, type)` naar de juiste RabbitMQ bestemming. Het is de motor achter de automatische validatietesten in deze map.
-
-### 5. `extract_xsds.py`
-Een handige utility om XSD-definities uit documentatie of andere bronnen te trekken en op te slaan in de `schemas/` map.
+| Script | Doel | Wanneer |
+|---|---|---|
+| `test_contract_full.py` | Importeert echte team builder-functies, bouwt XML, valideert tegen team-XSDs + contract-regels | Builder compliance |
+| `test_integration.py` | Verstuurt XML naar de live RabbitMQ op de VM, verifieert routing via shadow queues | VM routing |
+| `check_rabbit.py` | Snelle connectivity check | Debuggen |
+| `setup_queues.py` | Configureert exchanges en queues op een schone RabbitMQ | Eenmalig / reset |
 
 ---
 
-## 🚀 Aan de slag
+## `test_contract_full.py`
 
-### Stap 1: De Sandbox starten (Docker)
-Als je wilt zien hoe berichten echt door queues vloeien:
 ```bash
-docker-compose up -d
-```
-Dit start RabbitMQ en 8 "receiver" containers die elk bericht dat ze ontvangen loggen.
+# Lokaal — alle teams (builders testen, geen VM nodig):
+python test_contract_full.py --phase1-only
 
-### Stap 2: Queues instellen
-```bash
-python setup_queues.py
+# Alleen Kassa:
+python test_contract_full.py --phase1-only --teams kassa
+
+# Volledig (builder + routing tegen VM):
+python test_contract_full.py \
+  --host 20.126.113.148 --port 30000 --user guest --pass guest
 ```
 
-### Stap 3: Testberichten sturen
+| Optie | Standaard | Beschrijving |
+|---|---|---|
+| `--repos-dir DIR` | bovenliggende map van dit script | Root waar team repos als subdirs staan (`Kassa/`, `Planning/`, `Facturatie/`) |
+| `--phase1-only` | — | Alleen builder compliance, geen VM verbinding |
+| `--phase2-only` | — | Alleen routing verificatie |
+| `--teams LIST` | `all` | Komma-gescheiden: `kassa,planning,facturatie` |
+| `--verbose` | — | Print volledige XML output |
+
+## `test_integration.py`
+
 ```bash
-python run_all.py
-```
-Check daarna de logs van je Docker containers om te zien of de berichten zijn aangekomen:
-```bash
-docker-compose logs -f
+# Azure VM (standaard instellingen):
+python test_integration.py
+
+# Andere host:
+python test_integration.py --host localhost --port 5672 --mgmt-port 15672
+
+# Alleen validatie, niet versturen:
+python test_integration.py --dry-run
+
+# Specifiek team:
+python test_integration.py --teams kassa,planning
 ```
 
 ---
 
-## ⚖️ Wanneer gebruik ik wat?
+## GitHub Actions
 
-| Scenario | Gebruik `xml-test-env` | Gebruik `Infra/scripts/test_integration.py` |
-| :--- | :---: | :---: |
-| Een nieuw berichttype toevoegen | ✅ | ❌ |
-| Een XSD fout opsporen | ✅ | ❌ |
-| Documentatie zoeken van een bericht | ✅ | ❌ |
-| Controleren of de routing in productie klopt | ❌ | ✅ |
-| Een end-to-end integratie test draaien | ❌ | ✅ |
-| CI/CD Pipeline validatie | ❌ | ✅ |
+### Vereiste secrets
+
+Instellen via **GitHub repo → Settings → Secrets and variables → Actions → New repository secret**.
+
+| Secret | Waarde | Waar te vinden |
+|---|---|---|
+| `RABBIT_HOST` | Azure VM publiek IP | Azure Portal → VM → Public IP |
+| `RABBIT_PORT` | AMQP NodePort | `30000` (standaard voor dit project) |
+| `RABBIT_MGMT_PORT` | Management API NodePort | `30001` (standaard voor dit project) |
+| `RABBIT_USER` | RabbitMQ gebruikersnaam | `setup/.env` op de VM |
+| `RABBIT_PASS` | RabbitMQ wachtwoord | `setup/.env` op de VM |
+
+> Geen `ORG_READ_TOKEN` nodig — alle team repos zijn public.
+
+### Twee CI jobs
+
+**Job 1 — Builder Compliance** (elke push/PR):
+- Checkt Kassa, Planning en Facturatie repos uit (public, geen token)
+- Runt `test_contract_full.py --phase1-only --repos-dir $GITHUB_WORKSPACE`
+- Geeft een job summary met pass/fail per builder
+
+**Job 2 — VM Routing** (alleen main branch of manueel):
+- Runt `test_integration.py` tegen de live Azure VM
+- Verifieert routing van alle ~35 flows in `contract_flows.yaml`
+- Geeft een job summary
+
+Manueel starten: **Actions → Integration Test Suite → Run workflow**  
+Je kunt daar ook één van de twee jobs skippen via de checkboxen.
 
 ---
 
-## 📝 Workflow voor Nieuwe Integraties
-1.  **Definieer:** Maak je `.xsd` in `schemas/`.
-2.  **Voorbeeld:** Maak een `.xml` in `examples/`.
-3.  **Check:** Draai `python validate_examples.py`.
-4.  **Implementeer:** Voeg een functie toe in `senders/` om dit bericht te versturen.
-5.  **Verifieer:** Draai de sandbox (Docker) en check of de mock-receiver het bericht pakt.
-6.  **Commit:** Zodra het werkt, update je ook de centrale suite in `Infra/scripts/`.
+## Wanneer hoef ik iets te updaten?
+
+| Situatie | Wat aanpassen |
+|---|---|
+| Team voegt nieuwe **builder functie** toe | Één test case in `test_contract_full.py` |
+| Team voegt nieuwe **routing flow** toe | Één entry in `contract_flows.yaml` |
+| Team repo wordt **hernoemd** | De `repository:` regel in de workflow |
 
 ---
+
+## Mappenstructuur
+
+```
+xml-test-env/
+├── .github/workflows/
+│   └── xml-integration-test.yml  — CI/CD workflow (2 jobs)
+├── examples/                      — Voorbeeld XML bestanden per message type
+├── schemas/                       — XSD referentie (team schemas zijn authoritatief)
+├── contract_flows.yaml            — Centrale registry van alle message flows
+├── test_contract_full.py          — Builder compliance test
+├── test_integration.py            — VM routing test
+├── check_rabbit.py                — RabbitMQ connectivity check
+└── setup_queues.py                — Queue/exchange setup utility
+```
+
+---
+
 *Groep 1 — Integratie Project 2026*

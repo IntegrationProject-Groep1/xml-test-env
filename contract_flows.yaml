@@ -1,0 +1,819 @@
+# contract_flows.yaml  —  Central message flow registry
+# Groep 1 / Desideriushogeschool 2026  /  XML/XSD Contract v2.3
+#
+# One entry per message type per producer. This file is the single source of
+# truth for integration tests. When a team adds a new sender, add an entry here.
+#
+# Fields:
+#   id            Unique identifier (snake_case)
+#   label         Human-readable description
+#   source        Sender name as it appears in <header/source>
+#   type          Message type as it appears in <header/type>
+#   section       Contract document section reference
+#   critical      true = failure blocks the build
+#   producer.team Producing team
+#   consumers[]   List of consuming teams + their queue name
+#   routing       Exchange/routing key configuration
+#     exchange    Empty string = default exchange (direct to queue)
+#     exchange_type  topic | direct | fanout
+#     routing_key Routing key; if exchange="", this is the queue name
+#   example       Relative path to an example XML file (used for routing test)
+#   schema        Relative path to XSD schema (used for validation)
+#   ack_reply_queue  Optional: queue where consuming service posts ACK (reply-to pattern)
+#
+# Routing test mode:
+#   When exchange is non-empty: shadow queue technique (exclusive temp queue bound to exchange)
+#   When exchange is empty:     direct queue check (basic_get from named queue)
+
+version: "2.3"
+
+flows:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # FRONTEND (PHP/Drupal)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - id: frontend_new_registration
+    label: "Frontend → CRM: new_registration"
+    source: frontend
+    type: new_registration
+    section: "§5.1"
+    critical: true
+    producer:
+      team: frontend
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: examples/new_registration_frontend.xml
+    schema: schemas/new_registration.xsd
+
+  - id: frontend_user_created
+    label: "Frontend → Identity: user_created"
+    source: frontend
+    type: user_created
+    section: "§5.2"
+    critical: true
+    producer:
+      team: frontend
+    consumers:
+      - team: identity
+        queue: identity.user.create.request
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: identity.user.create.request
+    example: examples/user_created_frontend.xml
+    schema: ~
+
+  - id: frontend_user_registered
+    label: "Frontend → CRM: user_registered"
+    source: frontend
+    type: user_registered
+    section: "§5.3"
+    critical: false
+    producer:
+      team: frontend
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: examples/user_registered_frontend.xml
+    schema: ~
+
+  - id: frontend_user_updated
+    label: "Frontend → CRM: user_updated"
+    source: frontend
+    type: user_updated
+    section: "§5.4"
+    critical: false
+    producer:
+      team: frontend
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: examples/user_updated_frontend.xml
+    schema: ~
+
+  - id: frontend_user_checkin
+    label: "Frontend → CRM: user_checkin"
+    source: frontend
+    type: user_checkin
+    section: "§5.5"
+    critical: false
+    producer:
+      team: frontend
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: examples/user_checkin_frontend.xml
+    schema: ~
+
+  - id: frontend_event_ended
+    label: "Frontend → Facturatie: event_ended"
+    source: frontend
+    type: event_ended
+    section: "§5.7"
+    critical: true
+    producer:
+      team: frontend
+    consumers:
+      - team: facturatie
+        queue: facturatie.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: facturatie.incoming
+    example: examples/event_ended_11_6.xml
+    schema: schemas/event_ended.xsd
+
+  - id: frontend_calendar_invite
+    label: "Frontend → Planning: calendar_invite"
+    source: frontend
+    type: calendar_invite
+    section: "§5.8"
+    critical: false
+    producer:
+      team: frontend
+    consumers:
+      - team: planning
+        queue: planning.session.events
+    routing:
+      exchange: calendar.exchange
+      exchange_type: topic
+      routing_key: frontend.to.planning.calendar.invite
+    example: examples/calendar_invite_frontend.xml
+    schema: ~
+
+  - id: frontend_session_create_request
+    label: "Frontend → Planning: session_create_request"
+    source: frontend
+    type: session_create_request
+    section: "§19.4"
+    critical: true
+    producer:
+      team: frontend
+    consumers:
+      - team: planning
+        queue: planning.session.events
+    routing:
+      exchange: planning.exchange
+      exchange_type: topic
+      routing_key: frontend.to.planning.session.create
+    example: examples/session_create_request_19_4.xml
+    schema: schemas/session_create_request.xsd
+
+  - id: frontend_session_update_request
+    label: "Frontend → Planning: session_update_request"
+    source: frontend
+    type: session_update_request
+    section: "§19.5"
+    critical: true
+    producer:
+      team: frontend
+    consumers:
+      - team: planning
+        queue: planning.session.events
+    routing:
+      exchange: planning.exchange
+      exchange_type: topic
+      routing_key: frontend.to.planning.session.update
+    example: examples/session_update_request_19_5.xml
+    schema: schemas/session_update_request.xsd
+
+  - id: frontend_session_delete_request
+    label: "Frontend → Planning: session_delete_request"
+    source: frontend
+    type: session_delete_request
+    section: "§19.6"
+    critical: true
+    producer:
+      team: frontend
+    consumers:
+      - team: planning
+        queue: planning.session.events
+    routing:
+      exchange: planning.exchange
+      exchange_type: topic
+      routing_key: frontend.to.planning.session.delete
+    example: examples/session_delete_request_19_6.xml
+    schema: schemas/session_delete_request.xsd
+
+  - id: frontend_session_view_request
+    label: "Frontend → Planning: session_view_request"
+    source: frontend
+    type: session_view_request
+    section: "§19.3"
+    critical: false
+    producer:
+      team: frontend
+    consumers:
+      - team: planning
+        queue: planning.session.events
+    routing:
+      exchange: planning.exchange
+      exchange_type: topic
+      routing_key: frontend.to.planning.session.view
+    example: ~
+    schema: ~
+
+  - id: frontend_cancel_registration
+    label: "Frontend → Planning: cancel_registration"
+    source: frontend
+    type: cancel_registration
+    section: "§5.6"
+    critical: false
+    producer:
+      team: frontend
+    consumers:
+      - team: planning
+        queue: planning.session.events
+    routing:
+      exchange: calendar.exchange
+      exchange_type: topic
+      routing_key: frontend.to.planning.cancel_registration
+    example: examples/cancel_registration_frontend.xml
+    schema: schemas/cancel_registration.xsd
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # KASSA (Odoo)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - id: kassa_consumption_order
+    label: "Kassa → CRM + Facturatie: consumption_order"
+    source: kassa
+    type: consumption_order
+    section: "§6.1"
+    critical: true
+    producer:
+      team: kassa
+    consumers:
+      - team: crm
+        queue: crm.incoming
+      - team: facturatie
+        queue: facturatie.incoming
+    routing:
+      exchange: kassa.exchange
+      exchange_type: topic
+      routing_key: kassa.payments.consumption
+    example: examples/consumption_order_6_1.xml
+    schema: schemas/consumption_order.xsd
+    ack_reply_queue: test.ack.crm
+
+  - id: kassa_payment_registered_consumption
+    label: "Kassa → CRM: payment_registered (consumption)"
+    source: kassa
+    type: payment_registered
+    section: "§6.2"
+    critical: true
+    producer:
+      team: kassa
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: kassa.exchange
+      exchange_type: topic
+      routing_key: kassa.payments.consumption
+    example: examples/payment_registered_kassa.xml
+    schema: schemas/payment_registered.xsd
+
+  - id: kassa_payment_registered_registration
+    label: "Kassa → CRM: payment_registered (registration)"
+    source: kassa
+    type: payment_registered
+    section: "§8.2"
+    critical: true
+    producer:
+      team: kassa
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: kassa.exchange
+      exchange_type: topic
+      routing_key: kassa.payments.registration
+    example: examples/payment_registered_8_2.xml
+    schema: schemas/payment_registered.xsd
+
+  - id: kassa_invoice_request
+    label: "Kassa → Facturatie: invoice_request"
+    source: kassa
+    type: invoice_request
+    section: "§6.5"
+    critical: true
+    producer:
+      team: kassa
+    consumers:
+      - team: facturatie
+        queue: facturatie.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: facturatie.incoming
+    example: examples/invoice_request_kassa.xml
+    schema: schemas/invoice_request.xsd
+
+  - id: kassa_badge_assigned
+    label: "Kassa → CRM: badge_assigned"
+    source: kassa
+    type: badge_assigned
+    section: "§6.3"
+    critical: false
+    producer:
+      team: kassa
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: kassa.exchange
+      exchange_type: topic
+      routing_key: kassa.payments.badge
+    example: examples/badge_assigned_kassa.xml
+    schema: schemas/badge_assigned.xsd
+
+  - id: kassa_refund_processed
+    label: "Kassa → CRM: refund_processed"
+    source: kassa
+    type: refund_processed
+    section: "§6.4"
+    critical: false
+    producer:
+      team: kassa
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: kassa.exchange
+      exchange_type: topic
+      routing_key: kassa.payments.refund
+    example: examples/refund_processed_kassa.xml
+    schema: schemas/refund_processed.xsd
+
+  - id: kassa_wallet_balance_update
+    label: "Kassa → Frontend: wallet_balance_update"
+    source: kassa
+    type: wallet_balance_update
+    section: "§6.8"
+    critical: false
+    producer:
+      team: kassa
+    consumers:
+      - team: frontend
+        queue: frontend.incoming
+    routing:
+      exchange: kassa.exchange
+      exchange_type: topic
+      routing_key: kassa.frontend.wallet
+    example: examples/wallet_balance_update_26_4.xml
+    schema: ~
+
+  - id: kassa_wallet_lease_request
+    label: "Kassa → CRM: wallet_lease_request"
+    source: kassa
+    type: wallet_lease_request
+    section: "§26.1"
+    critical: false
+    producer:
+      team: kassa
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: kassa.exchange
+      exchange_type: topic
+      routing_key: kassa.to.crm.wallet_lease_request
+    example: examples/wallet_lease_request_26_1.xml
+    schema: ~
+
+  - id: kassa_wallet_lease_return
+    label: "Kassa → CRM: wallet_lease_return"
+    source: kassa
+    type: wallet_lease_return
+    section: "§26.3"
+    critical: false
+    producer:
+      team: kassa
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: kassa.exchange
+      exchange_type: topic
+      routing_key: kassa.to.crm.wallet_lease_return
+    example: examples/wallet_lease_return_26_3.xml
+    schema: ~
+
+  - id: kassa_payment_status
+    label: "Kassa → Frontend: payment_status"
+    source: kassa
+    type: payment_status
+    section: "§6.7"
+    critical: false
+    producer:
+      team: kassa
+    consumers:
+      - team: frontend
+        queue: frontend.incoming
+    routing:
+      exchange: kassa.exchange
+      exchange_type: topic
+      routing_key: kassa.frontend.payment
+    example: examples/payment_status_6_7.xml
+    schema: ~
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # PLANNING
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - id: planning_session_created
+    label: "Planning → Frontend + CRM: session_created"
+    source: planning
+    type: session_created
+    section: "§21.1"
+    critical: true
+    producer:
+      team: planning
+    consumers:
+      - team: frontend
+        queue: planning.session.events
+      - team: crm
+        queue: planning.session.events
+    routing:
+      exchange: planning.exchange
+      exchange_type: topic
+      routing_key: planning.session.created
+    example: ~
+    schema: ~
+
+  - id: planning_session_updated
+    label: "Planning → Frontend + CRM: session_updated"
+    source: planning
+    type: session_updated
+    section: "§21.2"
+    critical: true
+    producer:
+      team: planning
+    consumers:
+      - team: frontend
+        queue: planning.session.events
+    routing:
+      exchange: planning.exchange
+      exchange_type: topic
+      routing_key: planning.session.updated
+    example: examples/session_updated_planning.xml
+    schema: schemas/session_updated.xsd
+
+  - id: planning_session_deleted
+    label: "Planning → Frontend + CRM: session_deleted"
+    source: planning
+    type: session_deleted
+    section: "§21.3"
+    critical: false
+    producer:
+      team: planning
+    consumers:
+      - team: frontend
+        queue: planning.session.events
+    routing:
+      exchange: planning.exchange
+      exchange_type: topic
+      routing_key: planning.session.deleted
+    example: examples/session_deleted_planning.xml
+    schema: schemas/session_deleted.xsd
+
+  - id: planning_session_occupancy_update
+    label: "Planning → Frontend: session_occupancy_update"
+    source: planning
+    type: session_occupancy_update
+    section: "§21.4"
+    critical: false
+    producer:
+      team: planning
+    consumers:
+      - team: frontend
+        queue: planning.session.events
+    routing:
+      exchange: planning.exchange
+      exchange_type: topic
+      routing_key: planning.session.occupancy
+    example: examples/session_occupancy_update_21_2.xml
+    schema: schemas/session_occupancy_update.xsd
+
+  - id: planning_calendar_invite_confirmed
+    label: "Planning → Frontend: calendar_invite_confirmed"
+    source: planning
+    type: calendar_invite_confirmed
+    section: "§21.5"
+    critical: false
+    producer:
+      team: planning
+    consumers:
+      - team: frontend
+        queue: ~
+    routing:
+      exchange: calendar.exchange
+      exchange_type: topic
+      routing_key: planning.to.frontend.calendar.invite.confirmed
+    example: ~
+    schema: ~
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # FACTURATIE
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - id: facturatie_invoice_status
+    label: "Facturatie → CRM: invoice_status"
+    source: facturatie
+    type: invoice_status
+    section: "§11.4"
+    critical: false
+    producer:
+      team: facturatie
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: examples/invoice_status_facturatie.xml
+    schema: ~
+
+  - id: facturatie_invoice_available
+    label: "Facturatie → Frontend: invoice_available"
+    source: facturatie
+    type: invoice_available
+    section: "§11.2"
+    critical: false
+    producer:
+      team: facturatie
+    consumers:
+      - team: frontend
+        queue: frontend.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: frontend.incoming
+    example: ~
+    schema: ~
+
+  - id: facturatie_send_mailing
+    label: "Facturatie → Mailing: send_mailing"
+    source: facturatie
+    type: send_mailing
+    section: "§13.1"
+    critical: true
+    producer:
+      team: facturatie
+    consumers:
+      - team: mailing
+        queue: mailing.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: facturatie.to.mailing
+    example: ~
+    schema: schemas/send_mailing.xsd
+
+  - id: facturatie_payment_registered
+    label: "Facturatie → CRM: payment_registered"
+    source: facturatie
+    type: payment_registered
+    section: "§11.5"
+    critical: false
+    producer:
+      team: facturatie
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: examples/payment_registered_crm.xml
+    schema: schemas/payment_registered.xsd
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # CRM
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - id: crm_send_mailing
+    label: "CRM → Mailing: send_mailing"
+    source: crm
+    type: send_mailing
+    section: "§13.1"
+    critical: false
+    producer:
+      team: crm
+    consumers:
+      - team: mailing
+        queue: mailing.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: mailing.incoming
+    example: examples/send_mailing_crm.xml
+    schema: schemas/send_mailing.xsd
+
+  - id: crm_invoice_request
+    label: "CRM → Facturatie: invoice_request"
+    source: crm
+    type: invoice_request
+    section: "§11.3"
+    critical: false
+    producer:
+      team: crm
+    consumers:
+      - team: facturatie
+        queue: facturatie.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: facturatie.incoming
+    example: examples/invoice_request_crm.xml
+    schema: schemas/invoice_request.xsd
+
+  - id: crm_profile_update
+    label: "CRM → Facturatie: profile_update"
+    source: crm
+    type: profile_update
+    section: "§11.6"
+    critical: false
+    producer:
+      team: crm
+    consumers:
+      - team: facturatie
+        queue: facturatie.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: facturatie.incoming
+    example: examples/profile_update_crm.xml
+    schema: ~
+
+  - id: crm_wallet_lease_grant
+    label: "CRM → Kassa: wallet_lease_grant"
+    source: crm
+    type: wallet_lease_grant
+    section: "§26.2"
+    critical: false
+    producer:
+      team: crm
+    consumers:
+      - team: kassa
+        queue: kassa.incoming
+    routing:
+      exchange: crm.exchange
+      exchange_type: topic
+      routing_key: crm.to.kassa.wallet_lease_grant
+    example: examples/wallet_lease_grant_26_2.xml
+    schema: ~
+
+  - id: crm_wallet_remote_topup
+    label: "CRM → Kassa: wallet_remote_topup"
+    source: crm
+    type: wallet_remote_topup
+    section: "§26.6"
+    critical: false
+    producer:
+      team: crm
+    consumers:
+      - team: kassa
+        queue: kassa.incoming
+    routing:
+      exchange: crm.exchange
+      exchange_type: topic
+      routing_key: crm.to.kassa.wallet_remote_topup
+    example: examples/wallet_remote_topup_26_6.xml
+    schema: ~
+
+  - id: crm_cancel_registration
+    label: "CRM → Planning: cancel_registration"
+    source: crm
+    type: cancel_registration
+    section: "§20.1"
+    critical: false
+    producer:
+      team: crm
+    consumers:
+      - team: planning
+        queue: planning.session.events
+    routing:
+      exchange: calendar.exchange
+      exchange_type: topic
+      routing_key: crm.to.planning.cancel_registration
+    example: examples/cancel_registration_crm.xml
+    schema: schemas/cancel_registration.xsd
+
+  - id: crm_new_registration
+    label: "CRM → Kassa: new_registration"
+    source: crm
+    type: new_registration
+    section: "§8.1"
+    critical: false
+    producer:
+      team: crm
+    consumers:
+      - team: kassa
+        queue: kassa.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: kassa.incoming
+    example: examples/new_registration_crm.xml
+    schema: schemas/new_registration.xsd
+
+  - id: crm_wallet_balance_update
+    label: "CRM → Frontend: wallet_balance_update"
+    source: crm
+    type: wallet_balance_update
+    section: "§26.4"
+    critical: false
+    producer:
+      team: crm
+    consumers:
+      - team: frontend
+        queue: frontend.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: frontend.incoming
+    example: examples/wallet_balance_update_crm.xml
+    schema: ~
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # MAILING
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - id: mailing_mailing_status
+    label: "Mailing → CRM: mailing_status"
+    source: mailing
+    type: mailing_status
+    section: "§14.1"
+    critical: false
+    producer:
+      team: mailing
+    consumers:
+      - team: crm
+        queue: crm.incoming
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: crm.incoming
+    example: examples/mailing_status_mailing.xml
+    schema: schemas/mailing_status.xsd
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # SHARED / ALL TEAMS
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - id: shared_log
+    label: "All teams → Monitoring: log"
+    source: "*"
+    type: log
+    section: "§3.5"
+    critical: false
+    producer:
+      team: "*"
+    consumers:
+      - team: monitoring
+        queue: logs
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: logs
+    example: examples/log_kassa.xml
+    schema: schemas/log.xsd
+
+  - id: shared_heartbeat
+    label: "All teams → Monitoring: heartbeat"
+    source: "*"
+    type: heartbeat
+    section: "§3"
+    critical: true
+    producer:
+      team: "*"
+    consumers:
+      - team: monitoring
+        queue: heartbeat
+    routing:
+      exchange: ""
+      exchange_type: direct
+      routing_key: heartbeat
+    example: ~
+    schema: ~
