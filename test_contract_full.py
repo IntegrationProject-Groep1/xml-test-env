@@ -468,7 +468,7 @@ class DynamicFlowRunner:
             except Exception as e: warn(f"Facturatie setup failed: {e}")
         i_dir = find_repo(repos, "identity-service")
         if i_dir:
-            _stub_module("sqlalchemy", Column=MagicMock(), String=MagicMock(), Boolean=MagicMock(), DateTime=MagicMock(), create_engine=MagicMock(), Integer=MagicMock(), ForeignKey=MagicMock(), Integer=MagicMock())
+            _stub_module("sqlalchemy", Column=MagicMock(), String=MagicMock(), Boolean=MagicMock(), DateTime=MagicMock(), create_engine=MagicMock(), Integer=MagicMock(), ForeignKey=MagicMock())
             _stub_module("sqlalchemy.ext.declarative", declarative_base=lambda: MagicMock())
             _stub_module("sqlalchemy.orm", sessionmaker=MagicMock(), Session=MagicMock(), relationship=MagicMock(), declarative_base=lambda: MagicMock())
 
