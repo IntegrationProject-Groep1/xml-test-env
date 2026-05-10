@@ -300,7 +300,8 @@ def get_crm_runner(c_dir):
         }};
         const mockMQ = {{
             assertQueue: async () => ({{ queue: 'mock' }}), assertExchange: async () => {{}}, bindQueue: async () => {{}},
-            consume: async () => ({{ consumerTag: 't' }}), sendToQueue: () => true, publish: () => true, ack: () => {{}}, nack: () => {{}}
+            consume: async () => ({{ consumerTag: 't' }}), sendToQueue: () => true, publish: () => true, ack: () => {{}}, nack: () => {{}},
+            cancel: async () => {{}}
         }};
         Module.prototype.require = function(p) {{
             if (p === 'libxmljs2') return {{ parseXml: () => ({{ validate: () => true }}), memoryUsage: () => 0 }};
@@ -321,6 +322,7 @@ def get_crm_runner(c_dir):
         async function run() {{
             try {{
                 if ("{mode}" === "build") {{
+                    console.warn = () => {{}}; 
                     const S = require('./src/sender'); const s = new S(); await s.init().catch(()=>{{}});
                     const result = await s.{m}({json.dumps(d)});
                     process.stdout.write(typeof result === 'object' ? (result.payload || JSON.stringify(result)) : String(result));
@@ -531,7 +533,7 @@ def test_shared(args):
                         cap = []
                         with patch("pika.BlockingConnection") as mc_cls:
                             mc = mc_cls.return_value; mch = MagicMock(); mc.channel.return_value = mch
-                            mch.basic_publish.side_effect = lambda e,r,b,**k: cap.append(b)
+                            mch.basic_publish.side_effect = lambda exchange, routing_key, body, properties=None, mandatory=False: cap.append(body)
                             detector.send_alert_xml(s)
                         return cap[0] if cap else None
                     _run_case(args, "monitoring/system_alert", lambda: cap_alert("kassa") or "", mon_dir / "xsd" / "system_alert.xsd", "HEARTBEAT_CRITICAL", "monitoring", flat_root="alert")
@@ -563,7 +565,7 @@ def main():
     try:
         print(f"\n{BOLD}COMPREHENSIVE BEHAVIORAL AUDIT — v2.3{RESET}")
         runner = DynamicFlowRunner(Path(args.repos_dir)); runner.setup(args); runner.run_all(args)
-        test_shared(args); test_contract_example_sweep(args)
+        test_shared(args); test_contract_sweep = test_contract_example_sweep(args)
         tot, fc = _state["tests"], _state["failures"]; print(f"\n{'═'*60}\n{tot - fc} PASSED / {fc} FAILED")
         exit_code = 1 if fc else 0
     except Exception as e: traceback.print_exc(); exit_code = 1
