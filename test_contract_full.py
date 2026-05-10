@@ -301,7 +301,7 @@ def get_crm_runner(c_dir):
         const mockMQ = {{
             assertQueue: async () => ({{ queue: 'mock' }}), assertExchange: async () => {{}}, bindQueue: async () => {{}},
             consume: async () => ({{ consumerTag: 't' }}), sendToQueue: () => true, publish: () => true, ack: () => {{}}, nack: () => {{}},
-            cancel: async () => {{}}
+            cancel: async () => {{}}, deleteQueue: async () => ({{ messageCount: 0 }}), deleteExchange: async () => {{}}
         }};
         Module.prototype.require = function(p) {{
             if (p === 'libxmljs2') return {{ parseXml: () => ({{ validate: () => true }}), memoryUsage: () => 0 }};
@@ -359,7 +359,7 @@ def _make_facturatie_process_fn(f_dir: Path):
     _stub_module("src.utils.xml_validator", validate_xml=lambda x, s=None: (True, None))
     _stub_module("src.services.fossbilling_api", create_registration_invoice=lambda *a: "INV-1", pay_invoice=lambda *a: True)
     _stub_module("src.services.identity_client", request_master_uuid=lambda *a: T_UUID)
-    _stub_module("src.services.consumption_store", store_consumption=MagicMock(), save_items=MagicMock())
+    _stub_module("src.services.consumption_store", store_consumption=MagicMock(), save_items=MagicMock(), get_pending_company_ids=lambda: [])
     rmod = importlib.import_module("src.services.rabbitmq_receiver")
     def f_rec(b: bytes):
         rmod.seen_message_ids.clear(); ch = MagicMock()
@@ -533,7 +533,7 @@ def test_shared(args):
                         cap = []
                         with patch("pika.BlockingConnection") as mc_cls:
                             mc = mc_cls.return_value; mch = MagicMock(); mc.channel.return_value = mch
-                            mch.basic_publish.side_effect = lambda exchange, routing_key, body, properties=None, mandatory=False: cap.append(body)
+                            mch.basic_publish.side_effect = lambda *a, **k: cap.append(k.get("body", b""))
                             detector.send_alert_xml(s)
                         return cap[0] if cap else None
                     _run_case(args, "monitoring/system_alert", lambda: cap_alert("kassa") or "", mon_dir / "xsd" / "system_alert.xsd", "HEARTBEAT_CRITICAL", "monitoring", flat_root="alert")
@@ -565,7 +565,7 @@ def main():
     try:
         print(f"\n{BOLD}COMPREHENSIVE BEHAVIORAL AUDIT — v2.3{RESET}")
         runner = DynamicFlowRunner(Path(args.repos_dir)); runner.setup(args); runner.run_all(args)
-        test_shared(args); test_contract_sweep = test_contract_example_sweep(args)
+        test_shared(args); test_contract_example_sweep(args)
         tot, fc = _state["tests"], _state["failures"]; print(f"\n{'═'*60}\n{tot - fc} PASSED / {fc} FAILED")
         exit_code = 1 if fc else 0
     except Exception as e: traceback.print_exc(); exit_code = 1
