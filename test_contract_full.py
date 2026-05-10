@@ -396,7 +396,7 @@ def _make_facturatie_process_fn(f_dir: Path):
     _stub_module("src.utils.xml_validator", validate_xml=lambda x, s=None: (True, None))
     _stub_module("src.services.fossbilling_api", create_registration_invoice=lambda *a, **k: "INV-1", pay_invoice=lambda *a, **k: True, update_client_by_identity_uuid=lambda *a, **k: True)
     _stub_module("src.services.identity_client", request_master_uuid=lambda *a, **k: T_UUID)
-    _stub_module("src.services.consumption_store", save_items=MagicMock(), get_pending_company_ids=lambda: [], update_meta_by_correlation_id=lambda *a, **k: True, get_items_by_correlation_id=lambda *a, **k: [])
+    _stub_module("src.services.consumption_store", save_items=MagicMock(), get_pending_company_ids=lambda: [], update_meta_by_correlation_id=lambda *a, **k: True, get_items_by_correlation_id=lambda *a, **k: ([], [], ""))
     rmod = importlib.import_module("src.services.rabbitmq_receiver")
     def f_rec(b: bytes):
         rmod.seen_message_ids.clear(); ch = MagicMock()
@@ -421,13 +421,13 @@ class DynamicFlowRunner:
             self.producers[("frontend", "user_created")] = lambda: run_fe("UserCreatedSender", {"identity_uuid": T_UUID, "email": "t@e.com", "date_of_birth": "1990-01-01"})
             self.producers[("frontend", "user_registered")] = lambda: run_fe("UserRegisteredSender", fe_reg_data)
             self.producers[("frontend", "user_updated")] = lambda: run_fe("UserUpdatedSender", fe_reg_data)
-            self.producers[("frontend", "user_checkin")] = lambda: run_fe("UserCheckinSender", {"user_id": T_UUID, "session_id": T_SESSION, "badge_id": T_BADGE})
+            self.producers[("frontend", "user_checkin")] = lambda: run_fe("UserCheckinSender", {"user_id": T_UUID, "session_id": T_SESSION, "badge_id": T_BADGE, "date_of_birth": "1990-01-01"})
             self.producers[("frontend", "event_ended")] = lambda: run_fe("EventEndedSender", {"event_id": "EV-001", "session_id": T_SESSION, "end_time": T_NOW})
             self.producers[("frontend", "calendar_invite")] = lambda: run_fe("CalendarInviteSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "identity_uuid": T_UUID, "attendee_email": "t@e.com"})
             self.producers[("frontend", "session_create_request")] = lambda: run_fe("SessionCreateRequestSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "max_attendees": 100})
             self.producers[("frontend", "session_update_request")] = lambda: run_fe("SessionUpdateRequestSender", {"session_id": T_SESSION, "title": "U", "start_datetime": T_NOW, "end_datetime": T_NOW})
             self.producers[("frontend", "session_delete_request")] = lambda: run_fe("SessionDeleteRequestSender", {"session_id": T_SESSION})
-            self.producers[("frontend", "user_deleted")] = lambda: run_fe("UserUnregisteredSender", {"identity_uuid": T_UUID})
+            self.producers[("frontend", "user_deleted")] = lambda: run_fe("UserUnregisteredSender", {"identity_uuid": T_UUID, "session_id": T_SESSION})
             self.producers[("frontend", "company_member_removed")] = lambda: run_fe("CompanyMemberRemovedSender", {"company_id": "C1", "identity_uuid": T_UUID, "reason": "admin_removed", "email": "t@e.com"})
             self.receivers["frontend"] = lambda b: (True, "")
             self.xsd_map["frontend_new_registration"] = f_dir / "xsd" / "new_registration.xsd"
@@ -437,10 +437,10 @@ class DynamicFlowRunner:
         if c_dir:
             run_crm = get_crm_runner(c_dir); self.runners["crm"] = run_crm
             self.receivers["crm"] = lambda b: run_crm("process", "handleMessage", b.decode("utf-8") if isinstance(b, bytes) else b)
-            self.producers[("crm", "new_registration")] = lambda: run_crm("build", "sendNewRegistrationToKassa", {"customer": {"identity_uuid": T_UUID, "email": "t@e.be", "type": "private"}, "session_id": T_SESSION})[1]
-            self.producers[("crm", "profile_update")] = lambda: run_crm("build", "sendProfileUpdateToKassa", {"identity_uuid": T_UUID, "email": "new@test.be"})[1]
-            self.producers[("crm", "invoice_request")] = lambda: run_crm("build", "sendInvoiceRequest", {"identity_uuid": T_UUID, "invoice_data": {"amount": "75.00"}})[1]
-            self.producers[("crm", "send_mailing")] = lambda: run_crm("build", "sendMailingSend", {"identity_uuid": T_UUID, "mail_type": "registration_confirmation"})[1]
+            self.producers[("crm", "new_registration")] = lambda: run_crm("build", "sendNewRegistrationToKassa", {"customer": {"identity_uuid": T_UUID, "email": "t@e.be", "type": "private", "first_name": "J", "last_name": "J", "date_of_birth": "1990-01-01"}, "session_id": T_SESSION})[1]
+            self.producers[("crm", "profile_update")] = lambda: run_crm("build", "sendProfileUpdateToKassa", {"identity_uuid": T_UUID, "email": "new@test.be", "first_name": "J", "last_name": "J", "date_of_birth": "1990-01-01"})[1]
+            self.producers[("crm", "invoice_request")] = lambda: run_crm("build", "sendInvoiceRequest", {"identity_uuid": T_UUID, "customer": {"email": "t@e.be", "first_name": "J", "last_name": "J"}, "invoice_data": {"amount": "75.00"}})[1]
+            self.producers[("crm", "send_mailing")] = lambda: run_crm("build", "sendMailingSend", {"identity_uuid": T_UUID, "mail_type": "registration_confirmation", "recipients": [{"email": "t@e.be", "identity_uuid": T_UUID, "first_name": "J", "last_name": "J"}]})[1]
             self.xsd_map["crm_new_registration"] = c_dir / "xsd" / "new_registration_kassa.xsd"
 
         # 3. KASSA
