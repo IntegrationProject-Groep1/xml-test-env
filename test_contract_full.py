@@ -107,6 +107,18 @@ def load_env(path=".env"):
                 k, _, v = line.partition("=")
                 os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
+def parse_args():
+    p = argparse.ArgumentParser(description="Comprehensive Behavioral Contract Audit — v2.3")
+    p.add_argument("--repos-dir", default=".", help="Directory containing all team repositories")
+    p.add_argument("--teams",     default="all", help="Comma-separated list of teams to test (default: all)")
+    p.add_argument("--env",       default=".env", help="Path to .env file")
+    p.add_argument("--verbose",   action="store_true", help="Print detailed output")
+    return p.parse_args()
+
+def team_applies(args, team):
+    if not args.teams or args.teams == "all": return True
+    return team.lower() in [t.strip().lower() for t in args.teams.split(",")]
+
 def _flows_by_id():
     global _FLOWS_BY_ID
     if not _YAML_AVAILABLE: return {}
