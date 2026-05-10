@@ -285,8 +285,8 @@ echo $sender->buildXml($data);
 """
             with tempfile.NamedTemporaryFile(mode="w", suffix=".php", delete=False, encoding="utf-8") as pf:
                 pf.write(php_src); php_path = pf.name
-            res = subprocess.run(["php", php_path], capture_output=True, text=True, cwd=str(f_dir_p))
-            return f"ERROR: {res.stderr or res.stdout}" if res.returncode != 0 else res.stdout
+            res = subprocess.run(["php", php_path], capture_output=True, text=True, cwd=str(f_dir_p), shell=True)
+            return f"ERROR: {res.stderr or res.stdout}" if res.returncode != 0 else res.stdout.strip()
         except Exception as e: return f"ERROR: {e}"
         finally:
             for p in (json_path, php_path):
@@ -299,12 +299,18 @@ def get_crm_runner(c_dir):
     def run_node(mode, m, d):
         data_json = json.dumps(d)
         script = f"""
+        const T_UUID = "{T_UUID}";
         const Module = require('module'); const orig = Module.prototype.require;
         const mockSF = {{
             init: async () => true, isConnected: true,
             apiCall: async (fn) => {{
                 const conn = {{ sobject: (type) => ({{
-                    upsert: async () => ({{ success: true, id: 'SF-ID' }}),
+                    upsert: async (data, key) => {{
+                        if (type === 'Member__c' && data.hasOwnProperty('User_ID__c')) {{
+                            throw new Error("INVALID_FIELD: No such column 'User_ID__c' on sobject of type Member__c");
+                        }}
+                        return {{ success: true, id: 'SF-ID' }};
+                    }},
                     create: async () => ({{ success: true, id: 'SF-ID' }}),
                     update: async () => ({{ success: true, id: 'SF-ID' }}),
                     find: () => ({{ limit: () => Promise.resolve([{{ Id: 'SF-ID' }}]) }})
@@ -312,20 +318,27 @@ def get_crm_runner(c_dir):
             }}
         }};
         let consumers = {{}};
+        let capturedPayload = null;
         const mockMQ = {{
             assertQueue: async (q) => ({{ queue: q || 'mock-q' }}),
             assertExchange: async () => {{}}, bindQueue: async () => {{}},
             consume: async (q, cb) => {{ consumers[q] = cb; return {{ consumerTag: 'tag' }}; }},
             sendToQueue: (q, body, props) => {{
                 if (q.includes('identity')) {{
-                    const resp = `<identity_response><status>ok</status><user><master_uuid>{T_UUID}</master_uuid><email>t@e.com</email><created_by>audit</created_by><created_at>2026-05-10T00:00:00Z</created_at></user></identity_response>`;
+                    const resp = `<identity_response><status>ok</status><user><master_uuid>${{T_UUID}}</master_uuid><email>t@e.com</email><created_by>audit</created_by><created_at>2026-05-10T00:00:00Z</created_at></user></identity_response>`;
                     if (props.replyTo && consumers[props.replyTo]) {{
                         setTimeout(() => consumers[props.replyTo]({{ content: Buffer.from(resp), properties: {{ correlationId: props.correlationId }} }}), 10);
                     }}
+                }} else {{
+                    capturedPayload = body.toString();
                 }}
                 return true;
             }},
-            publish: () => true, ack: () => {{}}, nack: () => {{}},
+            publish: (ex, rk, body, props) => {{
+                capturedPayload = body.toString();
+                return true;
+            }},
+            ack: () => {{}}, nack: () => {{}},
             cancel: async () => {{}}, deleteQueue: async () => ({{ messageCount: 0 }}), deleteExchange: async () => {{}}
         }};
         Module.prototype.require = function(p) {{
@@ -344,10 +357,10 @@ def get_crm_runner(c_dir):
             try {{
                 const d = {data_json};
                 if ("{mode}" === "build") {{
-                    console.warn = () => {{}}; 
+                    let logs = []; console.log = (...a) => logs.push(a.join(' ')); console.error = (...a) => logs.push(a.join(' ')); console.warn = () => {{}}; 
                     const S = require('./src/sender'); const s = new S(); await s.init().catch(()=>{{}});
-                    const result = await s.{m}(d);
-                    process.stdout.write(typeof result === 'object' ? (result.payload || JSON.stringify(result)) : String(result));
+                    await s.{m}(d);
+                    process.stdout.write(capturedPayload || "ERROR: No XML generated");
                 }} else {{
                     const R = require('./src/receiver'); const r = new R(); r.channel = mockMQ; r.sf = mockSF;
                     if (r.sender) {{ r.sender.channel = mockMQ; r.sender.init = async () => {{}}; }}
@@ -367,8 +380,10 @@ def get_crm_runner(c_dir):
             for k, v in [("RABBITMQ_USER", "guest"), ("RABBITMQ_PASS", "guest"), ("RABBITMQ_HOST", "localhost")]:
                 if k not in env: env[k] = v
             res = subprocess.run(["node", "-e", script], cwd=str(c_dir), capture_output=True, text=True, env=env)
-            return res.returncode == 0, res.stdout if res.returncode == 0 else res.stderr
-        except Exception as e: return False, str(e)
+            if res.returncode != 0:
+                return False, f"ERROR: {res.stderr or res.stdout}"
+            return True, res.stdout
+        except Exception as e: return False, f"ERROR: {e}"
     return run_node
 
 def _make_facturatie_process_fn(f_dir: Path):
@@ -379,9 +394,9 @@ def _make_facturatie_process_fn(f_dir: Path):
     importlib.import_module("src"); importlib.import_module("src.services")
     _stub_module("src.services.rabbitmq_utils", get_connection=MagicMock(), get_connection_with_retry=MagicMock(), send_to_dlq=MagicMock())
     _stub_module("src.utils.xml_validator", validate_xml=lambda x, s=None: (True, None))
-    _stub_module("src.services.fossbilling_api", create_registration_invoice=lambda *a: "INV-1", pay_invoice=lambda *a: True)
-    _stub_module("src.services.identity_client", request_master_uuid=lambda *a: T_UUID)
-    _stub_module("src.services.consumption_store", save_items=MagicMock(), get_pending_company_ids=lambda: [])
+    _stub_module("src.services.fossbilling_api", create_registration_invoice=lambda *a, **k: "INV-1", pay_invoice=lambda *a, **k: True, update_client_by_identity_uuid=lambda *a, **k: True)
+    _stub_module("src.services.identity_client", request_master_uuid=lambda *a, **k: T_UUID)
+    _stub_module("src.services.consumption_store", save_items=MagicMock(), get_pending_company_ids=lambda: [], update_meta_by_correlation_id=lambda *a, **k: True, get_items_by_correlation_id=lambda *a, **k: [])
     rmod = importlib.import_module("src.services.rabbitmq_receiver")
     def f_rec(b: bytes):
         rmod.seen_message_ids.clear(); ch = MagicMock()
@@ -404,8 +419,8 @@ class DynamicFlowRunner:
             fe_reg_data = {"identity_uuid": T_UUID, "email": "t@e.com", "first_name": "J", "last_name": "J", "date_of_birth": "1990-01-01", "address": "S 1, 1000 B", "session_id": T_SESSION}
             self.producers[("frontend", "new_registration")] = lambda: run_fe("NewRegistrationSender", fe_reg_data)
             self.producers[("frontend", "user_created")] = lambda: run_fe("UserCreatedSender", {"identity_uuid": T_UUID, "email": "t@e.com", "date_of_birth": "1990-01-01"})
-            self.producers[("frontend", "user_registered")] = lambda: run_fe("UserRegisteredSender", {"identity_uuid": T_UUID, "type": "private"})
-            self.producers[("frontend", "user_updated")] = lambda: run_fe("UserUpdatedSender", {"identity_uuid": T_UUID, "email": "new@e.com"})
+            self.producers[("frontend", "user_registered")] = lambda: run_fe("UserRegisteredSender", fe_reg_data)
+            self.producers[("frontend", "user_updated")] = lambda: run_fe("UserUpdatedSender", fe_reg_data)
             self.producers[("frontend", "user_checkin")] = lambda: run_fe("UserCheckinSender", {"user_id": T_UUID, "session_id": T_SESSION, "badge_id": T_BADGE})
             self.producers[("frontend", "event_ended")] = lambda: run_fe("EventEndedSender", {"event_id": "EV-001", "session_id": T_SESSION, "end_time": T_NOW})
             self.producers[("frontend", "calendar_invite")] = lambda: run_fe("CalendarInviteSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "identity_uuid": T_UUID, "attendee_email": "t@e.com"})
@@ -425,7 +440,7 @@ class DynamicFlowRunner:
             self.producers[("crm", "new_registration")] = lambda: run_crm("build", "sendNewRegistrationToKassa", {"customer": {"identity_uuid": T_UUID, "email": "t@e.be", "type": "private"}, "session_id": T_SESSION})[1]
             self.producers[("crm", "profile_update")] = lambda: run_crm("build", "sendProfileUpdateToKassa", {"identity_uuid": T_UUID, "email": "new@test.be"})[1]
             self.producers[("crm", "invoice_request")] = lambda: run_crm("build", "sendInvoiceRequest", {"identity_uuid": T_UUID, "invoice_data": {"amount": "75.00"}})[1]
-            self.producers[("crm", "send_mailing")] = lambda: run_crm("build", "sendMailingSend", {"identity_uuid": T_UUID, "mail_type": "welcome"})[1]
+            self.producers[("crm", "send_mailing")] = lambda: run_crm("build", "sendMailingSend", {"identity_uuid": T_UUID, "mail_type": "registration_confirmation"})[1]
             self.xsd_map["crm_new_registration"] = c_dir / "xsd" / "new_registration_kassa.xsd"
 
         # 3. KASSA
@@ -464,7 +479,7 @@ class DynamicFlowRunner:
                 p = ms / "schemas" / "send_mailing.xsd"
                 if not p.exists(): return False, f"XSD missing: {p}"
                 s_xsd = etree.XMLSchema(etree.parse(p))
-                with patch.dict(os.environ, {"FROM_EMAIL": "a@t.l"}, clear=False):
+                with patch.dict(os.environ, {"FROM_EMAIL": "a@t.l", "SCHEMAS_DIR": str(ms/"schemas")}, clear=False):
                     with patch("sendgrid_client.send_template_email", return_value=MagicMock(rejected=[])):
                         with patch("templates.resolve_template_id", return_value="t"):
                             with patch("builtins.open", side_effect=lambda f, *a, **k: open(Path(str(f).replace("/app/schemas", str(ms/"schemas"))), *a, **k)):
