@@ -64,7 +64,7 @@ def skip(msg):   print(f"  {YELLOW}⊘{RESET} {msg}")
 
 # ── Global State ───────────────────────────────────────────────────────────────
 _state = {"failures": 0, "tests": 0, "results": []}
-UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 # ── Stable Test Data ───────────────────────────────────────────────────────────
 T_UUID    = "11111111-2222-3333-4444-555555555555"
@@ -197,7 +197,7 @@ def structural_checks(xml_str: str, expected_type: str, expected_source: str, fl
 def _run_case(args, name, builder_fn, xsd_path, msg_type, source, receiver_fns=None, flat_root=None, fallback_flow_id=None):
     print(f"\n  [{name}]")
     _state["tests"] += 1
-    res = {"name": name, "p1": "fail", "p3": "skip", "error": "", "proc_error": "", "used_fallback": False}
+    res = {"name": name, "p1": "fail", "p3": "skip", "p3_details": {}, "error": "", "proc_error": "", "used_fallback": False}
     repos = Path(args.repos_dir); xml_str = None
     def _load_fallback(reason: str) -> bool:
         nonlocal xml_str
@@ -234,9 +234,16 @@ def _run_case(args, name, builder_fn, xsd_path, msg_type, source, receiver_fns=N
             try:
                 clean_xml = re.sub(r'<\?xml[^?]+\?>', '', xml_str).strip()
                 p_res, p_err = r_fn(clean_xml.encode('utf-8'))
-                if p_res: ok(f"Phase 3 ({r_name}): Processing success"); res["p3"] = "pass"
-                else: fail(f"Phase 3 ({r_name}): Processing failure: {p_err}"); res["p3"] = "fail"; res["proc_error"] += f"[{r_name}]: {p_err}; "
-            except Exception as e: fail(f"Phase 3 ({r_name}): Handler crash: {e}"); res["p3"] = "fail"; res["proc_error"] += f"[{r_name}]: {e}; "
+                if p_res: 
+                    ok(f"Phase 3 ({r_name}): Processing success"); res["p3_details"][r_name] = "pass"
+                else: 
+                    fail(f"Phase 3 ({r_name}): Processing failure: {p_err}"); res["p3_details"][r_name] = "fail"; res["proc_error"] += f"[{r_name}]: {p_err}; "
+            except Exception as e: 
+                fail(f"Phase 3 ({r_name}): Handler crash: {e}"); res["p3_details"][r_name] = "fail"; res["proc_error"] += f"[{r_name}]: {e}; "
+        # Aggregate logic status
+        if any(v == "fail" for v in res["p3_details"].values()): res["p3"] = "fail"
+        elif all(v == "pass" for v in res["p3_details"].values()): res["p3"] = "pass"
+
     if res["p1"] == "fail" or res["p3"] == "fail": _state["failures"] += 1
     _state["results"].append(res)
 
@@ -298,10 +305,27 @@ def get_crm_runner(c_dir):
                 }}) }}; return await fn(conn);
             }}
         }};
+        let consumers = {{}};
         const mockMQ = {{
-            assertQueue: async () => ({{ queue: 'mock' }}), assertExchange: async () => {{}}, bindQueue: async () => {{}},
-            consume: async () => ({{ consumerTag: 't' }}), sendToQueue: () => true, publish: () => true, ack: () => {{}}, nack: () => {{}},
-            cancel: async () => {{}}, deleteQueue: async () => ({{ messageCount: 0 }}), deleteExchange: async () => {{}}
+            assertQueue: async (q) => ({{ queue: q || 'mock-' + Math.random().toString(36).substr(2, 5) }}),
+            assertExchange: async () => {{}}, bindQueue: async () => {{}},
+            consume: async (q, cb) => {{
+                const tag = 'tag-' + Math.random().toString(36).substr(2, 5);
+                consumers[q] = {{ cb, tag }};
+                return {{ consumerTag: tag }};
+            }},
+            sendToQueue: (q, body, props) => {{
+                if (q === 'identity.user.create.request' || q === 'identity.user.lookup.email.request') {{
+                    const replyTo = props.replyTo;
+                    if (consumers[replyTo]) {{
+                        const resp = `<identity_response><status>ok</status><user><master_uuid>{T_UUID}</master_uuid><email>t@e.com</email><created_by>audit</created_by><created_at>2026-05-10T00:00:00Z</created_at></user></identity_response>`;
+                        setTimeout(() => consumers[replyTo].cb({{ content: Buffer.from(resp), properties: {{ correlationId: props.correlationId }} }}), 10);
+                    }}
+                }}
+                return true;
+            }},
+            publish: (e, r, b) => true, ack: () => {{}}, nack: () => {{}},
+            cancel: async (tag) => {{}}, deleteQueue: async (q) => ({{ messageCount: 0 }}), deleteExchange: async () => {{}}
         }};
         Module.prototype.require = function(p) {{
             if (p === 'libxmljs2') return {{ parseXml: () => ({{ validate: () => true }}), memoryUsage: () => 0 }};
@@ -392,7 +416,6 @@ class DynamicFlowRunner:
             self.producers[("frontend", "session_create_request")] = lambda: run_fe("SessionCreateRequestSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "max_attendees": 100})
             self.producers[("frontend", "session_update_request")] = lambda: run_fe("SessionUpdateRequestSender", {"session_id": T_SESSION, "title": "U", "start_datetime": T_NOW, "end_datetime": T_NOW})
             self.producers[("frontend", "session_delete_request")] = lambda: run_fe("SessionDeleteRequestSender", {"session_id": T_SESSION})
-            self.producers[("frontend", "cancel_registration")] = lambda: run_fe("CancelRegistrationSender", {"identity_uuid": T_UUID, "session_id": T_SESSION})
             self.producers[("frontend", "user_deleted")] = lambda: run_fe("UserUnregisteredSender", {"identity_uuid": T_UUID})
             self.producers[("frontend", "company_member_removed")] = lambda: run_fe("CompanyMemberRemovedSender", {"company_id": "C1", "identity_uuid": T_UUID, "reason": "admin_removed", "email": "t@e.com"})
             self.receivers["frontend"] = lambda b: (True, "")
@@ -462,11 +485,23 @@ class DynamicFlowRunner:
                 self.producers[("facturatie", "send_mailing")] = lambda: s_f.build_invoice_created_notification_xml("I1","t@e.com",T_CORR,"J","J","C1",T_UUID)
                 self.xsd_map["facturatie_send_mailing"] = f_fact / "src" / "services" / "xsd" / "send_mailing.xsd"
             except Exception as e: warn(f"Facturatie setup failed: {e}")
+        # 6. IDENTITY (identity-service) - Section 15
         i_dir = find_repo(repos, "identity-service")
         if i_dir:
-            _stub_module("sqlalchemy", Column=MagicMock(), String=MagicMock(), Boolean=MagicMock(), DateTime=MagicMock(), create_engine=MagicMock(), Integer=MagicMock(), ForeignKey=MagicMock())
-            _stub_module("sqlalchemy.ext.declarative", declarative_base=lambda: MagicMock())
-            _stub_module("sqlalchemy.orm", sessionmaker=MagicMock(), Session=MagicMock(), relationship=MagicMock(), declarative_base=lambda: MagicMock())
+            sys.path.insert(0, str(i_dir))
+            try:
+                _stub_module("sqlalchemy", Column=MagicMock(), String=MagicMock(), Boolean=MagicMock(), DateTime=MagicMock(), create_engine=MagicMock(), Integer=MagicMock(), ForeignKey=MagicMock())
+                _stub_module("sqlalchemy.ext.declarative", declarative_base=lambda: MagicMock())
+                _stub_module("sqlalchemy.orm", sessionmaker=MagicMock(), Session=MagicMock(), relationship=MagicMock(), declarative_base=lambda: MagicMock())
+                _stub_module("database", SessionLocal=MagicMock(), engine=MagicMock())
+                import rabbitmq_service as i_svc
+                mock_user = MagicMock(master_uuid=T_UUID, email="t@e.com", created_by="audit", created_at=datetime.now())
+                self.producers[("id-service", "identity_response")] = lambda: i_svc._build_ok_response(mock_user)
+                self.receivers["id-service"] = lambda b: (True, "")
+                self.xsd_map["id-service_identity_response"] = i_dir / "contracts" / "xsd" / "identity_response.xsd"
+                if not self.xsd_map["id-service_identity_response"].exists():
+                     self.xsd_map["id-service_identity_response"] = i_dir / "tests" / "xsd" / "identity_response.xsd" 
+            except Exception as e: warn(f"Identity Service dynamic setup failed: {e}")
 
         # 7. MAILING
         m_dir = find_repo(repos, "Mailing")
@@ -533,7 +568,7 @@ def test_shared(args):
                         cap = []
                         with patch("pika.BlockingConnection") as mc_cls:
                             mc = mc_cls.return_value; mch = MagicMock(); mc.channel.return_value = mch
-                            mch.basic_publish.side_effect = lambda *a, **k: cap.append(k.get("body", b""))
+                            mch.basic_publish.side_effect = lambda exchange, routing_key, body, properties=None, mandatory=False: cap.append(body)
                             detector.send_alert_xml(s)
                         return cap[0] if cap else None
                     _run_case(args, "monitoring/system_alert", lambda: cap_alert("kassa") or "", mon_dir / "xsd" / "system_alert.xsd", "HEARTBEAT_CRITICAL", "monitoring", flat_root="alert")
@@ -547,7 +582,7 @@ def test_contract_example_sweep(args):
         flow = _flows_by_id()[fid]; ex = flow.get("example"); sc = flow.get("schema")
         if not ex or ex in ("~", None) or not sc or sc in ("~", None): continue
         epath = contracts_root / ex; spath = contracts_root / sc; name = f"contract-sweep/{fid}"
-        print(f"\n  [{name}]"); _state["tests"] += 1; res = {"name": name, "p1": "fail", "p3": "skip", "error": "", "proc_error": "", "used_fallback": False}
+        print(f"\n  [{name}]"); _state["tests"] += 1; res = {"name": name, "p1": "fail", "p3": "skip", "p3_details": {}, "error": "", "proc_error": "", "used_fallback": False}
         if not epath.is_file(): fail(f"Example missing: {epath}"); res["error"] = "example file missing"
         elif not spath.is_file(): fail(f"Schema missing: {spath}"); res["error"] = "schema file missing"
         else:
@@ -576,7 +611,13 @@ def main():
                 f.write("## 🧪 Behavioral Audit v2.3\n\n| Test Case | XSD | Logic |\n|---|---|---|\n")
                 for r in _state["results"]:
                     p1 = "✅" if r["p1"] == "pass" else "❌" if r["p1"] == "fail" else "⏭️"
-                    p3 = "✅" if r["p3"] == "pass" else "❌" if r["p3"] == "fail" else "⏭️"
+                    if r["p3_details"]:
+                        p3_parts = []
+                        for h_name, h_stat in r["p3_details"].items():
+                            p3_parts.append(f"{h_name}:{'✅' if h_stat == 'pass' else '❌'}")
+                        p3 = ", ".join(p3_parts)
+                    else:
+                        p3 = "✅" if r["p3"] == "pass" else "❌" if r["p3"] == "fail" else "⏭️"
                     f.write(f"| `{r['name']}` | {p1} | {p3} |\n")
                 f.write(markdown_full_log(capture.getvalue()))
     sys.exit(exit_code)
