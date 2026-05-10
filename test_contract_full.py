@@ -6,19 +6,6 @@ This suite executes real team code to verify the entire lifecycle of EVERY flow:
 1.  BUILD: Can the sender generate valid XML? (Phase 1)
 2.  VALIDATE: Does it match the contract XSD? (Phase 1)
 3.  PROCESS: Can the receiver handle the XML without logic errors? (Phase 3)
-
-Also:
-- contract_flows.yaml drives optional `example:` XML fallbacks when a builder crashes or returns
-  empty output (place examples under `<repos-dir>/contracts/`).
-- E2E chains (see test_e2e_chains) feed one team’s XML into the next consumer; use
-  `--no-chains` to skip. Chains run only when `--teams` includes every producer/consumer
-  in that hop (e.g. frontend+crm for the first chain).
-- Kassa `consumption_order` Phase 3 fans out to CRM + Facturatie when those repos are
-  present (same payload as in contract_flows).
-- `test_contract_example_sweep` validates every `example` + `schema` pair from
-  `contract_flows.yaml` under `contracts/` (broad static coverage). Use `--no-contract-sweep` to skip.
-- GitHub Actions: full console output is always appended to `GITHUB_STEP_SUMMARY`, even if the
-  run crashes mid-suite (e.g. `SystemExit` from an imported team module).
 """
 
 import argparse
@@ -320,10 +307,14 @@ def get_crm_runner(c_dir):
             if (p === 'amqplib') return {{ connect: async () => ({{ createChannel: async () => mockMQ, on: () => {{}} }}) }};
             if (p && p.includes('sfConnection')) return function() {{ return mockSF; }};
             if (p && p.includes('sender')) {{
-                const Real = orig.call(this, p);
-                return class Mock extends Real {{
-                    constructor() {{ super(...arguments); this.init = async () => {{}}; this.sendLog = async () => ({{ success: true }}); this.channel = mockMQ; }}
-                }};
+                try {{
+                    const Real = orig.call(this, p);
+                    return class Mock extends Real {{
+                        constructor() {{ super(...arguments); this.init = async () => {{}}; this.sendLog = async () => ({{ success: true }}); this.channel = mockMQ; }}
+                    }};
+                }} catch(e) {{
+                    return class Mock {{ constructor() {{ this.init = async () => {{}}; this.sendLog = async () => ({{ success: true }}); this.channel = mockMQ; }} }};
+                }}
             }}
             return orig.apply(this, arguments);
         }};
@@ -348,7 +339,10 @@ def get_crm_runner(c_dir):
         run();
         """
         try:
-            res = subprocess.run(["node", "-e", script], cwd=str(c_dir), capture_output=True, text=True)
+            env = os.environ.copy()
+            for k, v in [("RABBITMQ_USER", "guest"), ("RABBITMQ_PASS", "guest"), ("RABBITMQ_HOST", "localhost"), ("RABBITMQ_PORT", "5672"), ("RABBITMQ_VHOST", "/")]:
+                if k not in env: env[k] = v
+            res = subprocess.run(["node", "-e", script], cwd=str(c_dir), capture_output=True, text=True, env=env)
             return res.returncode == 0, res.stdout if res.returncode == 0 else res.stderr
         except Exception as e: return False, str(e)
     return run_node
@@ -390,7 +384,7 @@ class DynamicFlowRunner:
             self.producers[("frontend", "user_created")] = lambda: run_fe("UserCreatedSender", {"identity_uuid": T_UUID, "email": "t@e.com", "date_of_birth": "1990-01-01"})
             self.producers[("frontend", "user_registered")] = lambda: run_fe("UserRegisteredSender", {"identity_uuid": T_UUID, "type": "private"})
             self.producers[("frontend", "user_updated")] = lambda: run_fe("UserUpdatedSender", {"identity_uuid": T_UUID, "email": "new@e.com"})
-            self.producers[("frontend", "user_checkin")] = lambda: run_fe("UserCheckinSender", {"identity_uuid": T_UUID, "session_id": T_SESSION, "badge_id": T_BADGE})
+            self.producers[("frontend", "user_checkin")] = lambda: run_fe("UserCheckinSender", {"user_id": T_UUID, "session_id": T_SESSION, "badge_id": T_BADGE})
             self.producers[("frontend", "event_ended")] = lambda: run_fe("EventEndedSender", {"event_id": "EV-001", "session_id": T_SESSION, "end_time": T_NOW})
             self.producers[("frontend", "calendar_invite")] = lambda: run_fe("CalendarInviteSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "identity_uuid": T_UUID, "attendee_email": "t@e.com"})
             self.producers[("frontend", "session_create_request")] = lambda: run_fe("SessionCreateRequestSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "max_attendees": 100})
@@ -398,7 +392,7 @@ class DynamicFlowRunner:
             self.producers[("frontend", "session_delete_request")] = lambda: run_fe("SessionDeleteRequestSender", {"session_id": T_SESSION})
             self.producers[("frontend", "cancel_registration")] = lambda: run_fe("CancelRegistrationSender", {"identity_uuid": T_UUID, "session_id": T_SESSION})
             self.producers[("frontend", "user_deleted")] = lambda: run_fe("UserUnregisteredSender", {"identity_uuid": T_UUID})
-            self.producers[("frontend", "company_member_removed")] = lambda: run_fe("CompanyMemberRemovedSender", {"company_id": "C1", "identity_uuid": T_UUID, "reason": "admin_removed"})
+            self.producers[("frontend", "company_member_removed")] = lambda: run_fe("CompanyMemberRemovedSender", {"company_id": "C1", "identity_uuid": T_UUID, "reason": "admin_removed", "email": "t@e.com"})
             self.receivers["frontend"] = lambda b: (True, "")
             self.xsd_map["frontend_new_registration"] = f_dir / "xsd" / "new_registration.xsd"
             self.xsd_map["frontend_session_create_request"] = f_dir / "xsd" / "session_create_request.xsd"
@@ -487,7 +481,6 @@ class DynamicFlowRunner:
                 with patch.dict(os.environ, {"FROM_EMAIL": "a@t.l"}, clear=False):
                     with patch("sendgrid_client.send_template_email", return_value=MagicMock(rejected=[])):
                         with patch("templates.resolve_template_id", return_value="t"):
-                            # Path patch: point /app/schemas to local schemas dir
                             with patch("builtins.open", side_effect=lambda f, *a, **k: open(Path(str(f).replace("/app/schemas", str(ms/"schemas"))), *a, **k)):
                                 cons_m.handle(env_m.parse_and_validate(b, s_xsd), MagicMock())
                 return True, ""
@@ -526,7 +519,7 @@ def test_shared(args):
     if mon_dir and team_applies(args, "monitoring"):
         det = mon_dir / "detector"; sys.path.insert(0, str(det))
         _stub_module("elasticsearch", Elasticsearch=MagicMock()); mock_log = MagicMock(); _stub_module("logging", getLogger=lambda n: mock_log)
-        with patch.dict(os.environ, {"RABBIT_HOST": args.host}, clear=False):
+        with patch.dict(os.environ, {"RABBITMQ_HOST": args.host, "RABBITMQ_PORT": str(args.port), "RABBITMQMONITORING_USER": "guest", "RABBITMQMONITORING_PASS": "guest", "RABBITMQ_VHOST": args.vhost}, clear=False):
             with patch("datetime.timezone", timezone.utc):
                 try:
                     _stub_module("pika", BlockingConnection=MagicMock())
