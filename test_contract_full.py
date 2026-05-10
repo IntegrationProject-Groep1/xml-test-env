@@ -387,10 +387,10 @@ class DynamicFlowRunner:
             run_fe = get_frontend_runner(f_dir); self.runners["frontend"] = run_fe
             fe_reg_data = {"identity_uuid": T_UUID, "email": "t@e.com", "first_name": "J", "last_name": "J", "date_of_birth": "1990-01-01", "address": "S 1, 1000 B", "session_id": T_SESSION}
             self.producers[("frontend", "new_registration")] = lambda: run_fe("NewRegistrationSender", fe_reg_data)
-            self.producers[("frontend", "user_created")] = lambda: run_fe("UserCreatedSender", {"identity_uuid": T_UUID, "email": "t@e.com"})
+            self.producers[("frontend", "user_created")] = lambda: run_fe("UserCreatedSender", {"identity_uuid": T_UUID, "email": "t@e.com", "date_of_birth": "1990-01-01"})
             self.producers[("frontend", "user_registered")] = lambda: run_fe("UserRegisteredSender", {"identity_uuid": T_UUID, "type": "private"})
             self.producers[("frontend", "user_updated")] = lambda: run_fe("UserUpdatedSender", {"identity_uuid": T_UUID, "email": "new@e.com"})
-            self.producers[("frontend", "user_checkin")] = lambda: run_fe("UserCheckinSender", {"identity_uuid": T_UUID, "session_id": T_SESSION})
+            self.producers[("frontend", "user_checkin")] = lambda: run_fe("UserCheckinSender", {"identity_uuid": T_UUID, "session_id": T_SESSION, "badge_id": T_BADGE})
             self.producers[("frontend", "event_ended")] = lambda: run_fe("EventEndedSender", {"event_id": "EV-001", "session_id": T_SESSION, "end_time": T_NOW})
             self.producers[("frontend", "calendar_invite")] = lambda: run_fe("CalendarInviteSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "identity_uuid": T_UUID, "attendee_email": "t@e.com"})
             self.producers[("frontend", "session_create_request")] = lambda: run_fe("SessionCreateRequestSender", {"session_id": T_SESSION, "title": "T", "start_datetime": T_NOW, "end_datetime": T_NOW, "location": "L", "max_attendees": 100})
@@ -398,7 +398,7 @@ class DynamicFlowRunner:
             self.producers[("frontend", "session_delete_request")] = lambda: run_fe("SessionDeleteRequestSender", {"session_id": T_SESSION})
             self.producers[("frontend", "cancel_registration")] = lambda: run_fe("CancelRegistrationSender", {"identity_uuid": T_UUID, "session_id": T_SESSION})
             self.producers[("frontend", "user_deleted")] = lambda: run_fe("UserUnregisteredSender", {"identity_uuid": T_UUID})
-            self.producers[("frontend", "company_member_removed")] = lambda: run_fe("CompanyMemberRemovedSender", {"company_id": "C1", "identity_uuid": T_UUID})
+            self.producers[("frontend", "company_member_removed")] = lambda: run_fe("CompanyMemberRemovedSender", {"company_id": "C1", "identity_uuid": T_UUID, "reason": "admin_removed"})
             self.receivers["frontend"] = lambda b: (True, "")
             self.xsd_map["frontend_new_registration"] = f_dir / "xsd" / "new_registration.xsd"
             self.xsd_map["frontend_session_create_request"] = f_dir / "xsd" / "session_create_request.xsd"
@@ -440,7 +440,7 @@ class DynamicFlowRunner:
                     self.producers[("kassa", "badge_assigned")] = lambda: s_k.build_badge_assigned_xml(T_BADGE, T_UUID)
                     self.producers[("kassa", "refund_processed")] = lambda: s_k.build_refund_processed_xml(T_CORR, "partial", 10.0, "card_reversal", "duplicate_payment", "T1", identity_uuid=T_UUID)
                     self.producers[("kassa", "wallet_balance_update")] = lambda: s_k.build_wallet_balance_update_xml(T_UUID, 12.50, authority="crm", status="active")
-                    self.producers[("kassa", "payment_status")] = lambda: s_k.build_payment_status_xml(T_UUID, "success")
+                    self.producers[("kassa", "payment_status")] = lambda: s_k.build_payment_status_xml(T_UUID, "paid")
                     self.producers[("kassa", "invoice_request")] = lambda: s_k.build_invoice_request_xml(T_UUID, {"first_name":"J","last_name":"J","email":"t@e.com"}, T_CORR)
                     self.xsd_map["kassa_consumption_order"] = ki / "schemas" / "schema_consumption_order_v2.3.xsd"
                     self.xsd_map["kassa_payment_registered_consumption"] = ki / "schemas" / "schema_payment_registered_v2.1.xsd"
@@ -453,7 +453,7 @@ class DynamicFlowRunner:
             sys.path.insert(0, str(p_dir))
             _stub_module("psycopg2", connect=MagicMock()); _stub_module("psycopg2.extras", RealDictCursor=MagicMock(), DictCursor=MagicMock())
             _stub_module("msal", PublicClientApplication=MagicMock(), ConfidentialClientApplication=MagicMock(), SerializableTokenCache=MagicMock())
-            _stub_module("requests", get=MagicMock(), post=MagicMock(), Session=MagicMock(), Response=type("Response", (), {}))
+            _stub_module("requests", get=MagicMock(), post=MagicMock(), Session=MagicMock(), Response=MagicMock())
             _stub_module("cryptography.fernet", Fernet=MagicMock(), InvalidToken=type("InvalidToken", (Exception,), {}))
             _stub_module("azure.identity", DefaultAzureCredential=MagicMock())
         f_fact = find_repo(repos, "Facturatie")
@@ -468,7 +468,7 @@ class DynamicFlowRunner:
             except Exception as e: warn(f"Facturatie setup failed: {e}")
         i_dir = find_repo(repos, "identity-service")
         if i_dir:
-            _stub_module("sqlalchemy", Column=MagicMock(), String=MagicMock(), Boolean=MagicMock(), DateTime=MagicMock(), create_engine=MagicMock(), Integer=MagicMock(), ForeignKey=MagicMock())
+            _stub_module("sqlalchemy", Column=MagicMock(), String=MagicMock(), Boolean=MagicMock(), DateTime=MagicMock(), create_engine=MagicMock(), Integer=MagicMock(), ForeignKey=MagicMock(), Integer=MagicMock())
             _stub_module("sqlalchemy.ext.declarative", declarative_base=lambda: MagicMock())
             _stub_module("sqlalchemy.orm", sessionmaker=MagicMock(), Session=MagicMock(), relationship=MagicMock(), declarative_base=lambda: MagicMock())
 
@@ -487,8 +487,8 @@ class DynamicFlowRunner:
                 with patch.dict(os.environ, {"FROM_EMAIL": "a@t.l"}, clear=False):
                     with patch("sendgrid_client.send_template_email", return_value=MagicMock(rejected=[])):
                         with patch("templates.resolve_template_id", return_value="t"):
-                            # Patch hardcoded /app/ paths in mailing receiver if they exist
-                            with patch("builtins.open", side_effect=lambda f, *a, **k: open(p if "mailing_status.xsd" in str(f) else f, *a, **k)):
+                            # Path patch: point /app/schemas to local schemas dir
+                            with patch("builtins.open", side_effect=lambda f, *a, **k: open(Path(str(f).replace("/app/schemas", str(ms/"schemas"))), *a, **k)):
                                 cons_m.handle(env_m.parse_and_validate(b, s_xsd), MagicMock())
                 return True, ""
             self.receivers["mailing"] = m_rec_dyn; self.xsd_map["mailing_mailing_status"] = ms / "schemas" / "mailing_status.xsd"
