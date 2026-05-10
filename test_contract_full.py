@@ -133,8 +133,15 @@ def contract_example_path(repos_dir: Path, flow_id: str) -> Path | None:
     if not flow: return None
     ex = flow.get("example")
     if not ex or ex in ("~", None): return None
-    p = Path(repos_dir) / "contracts" / ex
-    if p.is_file(): return p
+    
+    # Prioriteit 1: De officiële contracten repo
+    p_official = Path(repos_dir) / "contracts" / ex
+    if p_official.is_file(): return p_official
+    
+    # Prioriteit 2: De xml-xsd-contract repo (alternate path)
+    p_central = Path(repos_dir) / "xml-xsd-contract" / "contracts" / ex
+    if p_central.is_file(): return p_central
+
     name = Path(ex).name
     fixtures = Path(repos_dir) / "integration-tests" / "fixtures"
     if fixtures.is_dir():
@@ -150,6 +157,16 @@ def contract_example_path(repos_dir: Path, flow_id: str) -> Path | None:
 
 def validate_against_xsd(xml_str: str, xsd_path: Path) -> tuple[bool, str | None]:
     if not _LXML_AVAILABLE: return False, "lxml missing"
+    
+    # Forceer check in de officiële contracts repo als eerste bron van waarheid
+    if xsd_path:
+        official_xsd = xsd_path.parents[1] / "contracts" / "xsd" / xsd_path.name
+        if official_xsd.exists(): xsd_path = official_xsd
+        else:
+            # Check alternatieve plek in xml-xsd-contract
+            central_xsd = xsd_path.parents[2] / "xml-xsd-contract" / "contracts" / "xsd" / xsd_path.name
+            if central_xsd.exists(): xsd_path = central_xsd
+
     if not xsd_path or not xsd_path.exists(): return False, f"XSD missing: {xsd_path}"
     try:
         with xsd_path.open("rb") as f: schema = etree.XMLSchema(etree.parse(f))
@@ -235,20 +252,38 @@ def _run_case(args, name, builder_fn, xsd_path, msg_type, source, receiver_fns=N
             else: fail(f"Contract Fout: {err}"); res["xsd_status"] = "FAIL"; res["xsd_error"] = err
 
     # 3. ONTVANGEN (Consumer)
-    if receiver_fns and xml_str:
-        for r_name, r_fn in receiver_fns.items():
-            info(f"Ontvangen: Injecteren in {r_name}...")
-            r_res = {"team": r_name.upper(), "status": "FAIL", "error": ""}
-            try:
-                clean_xml = re.sub(r'<\?xml[^?]+\?>', '', xml_str).strip()
-                p_success, p_err = r_fn(clean_xml.encode('utf-8'))
-                if p_success: 
-                    ok(f"Ontvangen ({r_name}): Verwerking geslaagd"); r_res["status"] = "OK"
-                else: 
-                    fail(f"Ontvangen ({r_name}): {p_err}"); r_res["error"] = p_err
-            except Exception as e: 
-                fail(f"Ontvangen ({r_name}): Crash: {e}"); r_res["error"] = str(e)
-            res["receivers"].append(r_res)
+    if receiver_fns:
+        # GEBRUIK DE OFFICIËLE XML VOOR INJECTIE (BRON VAN WAARHEID)
+        # Dit zorgt ervoor dat we de ontvanger testen tegen het contract, 
+        # ook als de verzender (producer) op dit moment een fout maakt.
+        injection_xml = None
+        p_ex = contract_example_path(repos, fallback_flow_id) if fallback_flow_id else None
+        if p_ex:
+            try: 
+                injection_xml = p_ex.read_text(encoding="utf-8")
+                info(f"Ontvangen: Gebruik officieel voorbeeld voor injectie ({p_ex.name})")
+            except Exception: pass
+        
+        # Fallback naar geproduceerde XML als er geen officieel voorbeeld gevonden is
+        if not injection_xml: injection_xml = xml_str
+
+        if injection_xml:
+            for r_name, r_fn in receiver_fns.items():
+                info(f"Ontvangen: Injecteren in {r_name}...")
+                r_res = {"team": r_name.upper(), "status": "FAIL", "error": ""}
+                try:
+                    clean_xml = re.sub(r'<\?xml[^?]+\?>', '', injection_xml).strip()
+                    p_success, p_err = r_fn(clean_xml.encode('utf-8'))
+                    if p_success: 
+                        ok(f"Ontvangen ({r_name}): Verwerking geslaagd"); r_res["status"] = "OK"
+                    else: 
+                        fail(f"Ontvangen ({r_name}): {p_err}"); r_res["error"] = p_err
+                except Exception as e: 
+                    fail(f"Ontvangen ({r_name}): Crash: {e}"); r_res["error"] = str(e)
+                res["receivers"].append(r_res)
+        else:
+            for r_name in receiver_fns:
+                warn(f"Ontvangen ({r_name}): Overgeslagen (geen XML beschikbaar voor injectie)")
 
     if res["sender_status"] == "FAIL" or res["xsd_status"] == "FAIL" or any(r["status"] == "FAIL" for r in res["receivers"]):
         _state["failures"] += 1
