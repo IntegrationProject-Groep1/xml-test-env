@@ -4,7 +4,7 @@ Groep 1 — Desideriushogeschool 2026  /  XML/XSD Contract v2.3
 
 Uitleg:
 Dit script test de volledige keten van elk bericht:
-1.  STUREN: Kan de verzender (producer) een bericht bouwen?
+1.  VERZENDEN: Kan de verzender (producer) een bericht bouwen?
 2.  CONTRACT: Voldoet dit bericht aan de officiële XSD afspraken?
 3.  ONTVANGEN: Kan de ontvanger (consumer) dit bericht verwerken?
 """
@@ -242,7 +242,7 @@ def _run_case(args, name, builder_fn, xsd_path, msg_type, source, receiver_fns=N
         _state["failures"] += 1
     _state["results"].append(res)
 
-# ── Team Runners (Gefixeerd voor stabiliteit) ──────────────────────────────────
+# ── Team Runners ───────────────────────────────────────────────────────────────
 
 def get_frontend_runner(f_dir):
     f_dir_p = Path(f_dir).resolve()
@@ -251,6 +251,7 @@ def get_frontend_runner(f_dir):
         try:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as jf:
                 json.dump(data, jf); json_path = jf.name
+            json_lit = json.dumps(json_path.replace("\\", "/"))
             php_src = f"""<?php
 $f_dir = '{f_dir_p.as_posix()}';
 $vendor = "$f_dir/vendor/autoload.php";
@@ -266,7 +267,7 @@ class MockLogger {{ public function info($m, $c) {{}} }}
 class MockDrupal {{ public static function logger($n) {{ return new MockLogger(); }} }}
 if (!class_exists('Drupal')) {{ class_alias('MockDrupal', 'Drupal'); }}
 if (!class_exists('Drupal\\rabbitmq_sender\\{method}')) {{ fwrite(STDERR, "ERROR: Class {method} not found."); exit(1); }}
-$data = json_decode(file_get_contents({json.dumps(json_path.replace("\\", "/"))}), true);
+$data = json_decode(file_get_contents({json_lit}), true);
 $sender = new \\Drupal\\rabbitmq_sender\\{method}();
 echo $sender->buildXml($data);
 """
@@ -284,6 +285,7 @@ echo $sender->buildXml($data);
 
 def get_crm_runner(c_dir):
     def run_node(mode, m, d):
+        data_json = json.dumps(d)
         script = f"""
         const Module = require('module'); const orig = Module.prototype.require;
         const mockSF = {{
@@ -328,15 +330,16 @@ def get_crm_runner(c_dir):
         }};
         async function run() {{
             try {{
+                const d = {data_json};
                 if ("{mode}" === "build") {{
                     console.warn = () => {{}}; 
                     const S = require('./src/sender'); const s = new S(); await s.init().catch(()=>{{}});
-                    const result = await s.{m}({json.dumps(d)});
+                    const result = await s.{m}(d);
                     process.stdout.write(typeof result === 'object' ? (result.payload || JSON.stringify(result)) : String(result));
                 }} else {{
                     const R = require('./src/receiver'); const r = new R(); r.channel = mockMQ; r.sf = mockSF;
                     if (r.sender) {{ r.sender.channel = mockMQ; r.sender.init = async () => {{}}; }}
-                    const msg = {{ content: Buffer.from(typeof {json.dumps(d)} === 'string' ? {json.dumps(d)} : JSON.stringify({json.dumps(d)})), fields: {{ deliveryTag: 1 }}, properties: {{ contentType: 'application/xml' }} }};
+                    const msg = {{ content: Buffer.from(typeof d === 'string' ? d : JSON.stringify(d)), fields: {{ deliveryTag: 1 }}, properties: {{ contentType: 'application/xml' }} }};
                     let logs = []; console.log = (...a) => logs.push(a.join(' ')); console.error = (...a) => logs.push(a.join(' '));
                     await r.handleMessage(msg);
                     const err = logs.find(l => (l.toLowerCase().includes('error') || l.includes('INVALID_FIELD') || l.includes('timeout')) && !l.includes('WARNING') && !l.includes('RabbitMQ'));
